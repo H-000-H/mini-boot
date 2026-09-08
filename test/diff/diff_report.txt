@@ -1,0 +1,8 @@
+a: D:\device_platform\mini-ota\test\image_test.bin
+  镜像[CBC 头部在后] version='1.0.0' tag='' aux=16B
+  crc: 存储 0x164e24ec 一致
+  解密 payload: 22592 字节  md5: b45bdc3cb8554028bd544f003405db33
+b: D:\device_platform\mini-ota\test\test.bin
+  原始 bin (未解析镜像头): 22592 字节  md5: b45bdc3cb8554028bd544f003405db33
+
+结果: 两文件完全一致

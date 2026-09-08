@@ -214,7 +214,7 @@ def _parse_image(data: bytes, path: str, mode: str, version_len: int, tag_len: i
 
 def _decrypt_payload(mode: str, payload: bytes, aux: bytes, key: bytes) -> bytes:
     """按打包模式解密 payload (SHA/CRC 模式 payload 即明文)"""
-    import digital_signal.image_aes as aes  # 按需加载: 仅 image_diff 需要 cryptography
+    import m_dsig.image_aes as aes  # 按需加载: 仅 image_diff 需要 cryptography
     if mode == "GCM":
         try:
             return aes.ase_gcm_decrypt(payload, key, aux[:12], aux[12:])
@@ -227,8 +227,8 @@ def _decrypt_payload(mode: str, payload: bytes, aux: bytes, key: bytes) -> bytes
 
 def _cmd_image_diff(args: argparse.Namespace) -> bool:
     """解析镜像头并解密 payload 后对比, 返回是否存在差异"""
-    import crc.image_crc as crc_mod  # 按需加载
-    import digital_signal.image_sha as sha
+    import m_crc.image_crc as crc_mod  # 按需加载
+    import m_dsig.image_sha as sha
 
     if args.check in ("GCM", "CBC", "CBC_SHA"):
         if not args.key:

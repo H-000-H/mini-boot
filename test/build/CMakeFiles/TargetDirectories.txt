@@ -1,0 +1,3 @@
+D:/device_platform/mini-ota/test/build/CMakeFiles/pc_check.dir
+D:/device_platform/mini-ota/test/build/CMakeFiles/edit_cache.dir
+D:/device_platform/mini-ota/test/build/CMakeFiles/rebuild_cache.dir

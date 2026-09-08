@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/device_platform/mini-ota/test/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

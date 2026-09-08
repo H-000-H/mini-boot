@@ -1,0 +1,7 @@
+# clangd 配置
+# 1. 使用 CMake 导出的编译数据库
+# 2. clangd 不会从 arm-none-eabi-gcc 路径推断交叉目标，
+#    显式指定 ARM 目标三元组，否则 -mcpu 等选项按 x86 解析报错
+CompileFlags:
+  CompilationDatabase: build/Debug
+  Add: [--target=armv7em-none-eabi]
