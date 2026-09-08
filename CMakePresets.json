@@ -17,17 +17,48 @@
                 "CMAKE_C_COMPILER": "arm-none-eabi-gcc",
                 "CMAKE_ASM_COMPILER": "arm-none-eabi-gcc",
                 "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
-                "CMAKE_C_FLAGS_INIT": "-mcpu=cortex-m4 -mthumb -ffunction-sections -fdata-sections",
-                "CMAKE_ASM_FLAGS_INIT": "-mcpu=cortex-m4 -mthumb -x assembler-with-cpp"
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp"
             }
         },
         {
             "name": "Debug",
             "inherits": "base",
-            "displayName": "Debug (STM32F407, arm-none-eabi)",
+            "displayName": "Debug (Cortex-M4, STM32F407)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+                "MINI_BOOT_M4": "ON"
+            }
+        },
+        {
+            "name": "Debug-M0",
+            "inherits": "base",
+            "displayName": "Debug (Cortex-M0)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "MINI_BOOT_M0": "ON",
+                "MINI_BOOT_M4": "OFF"
+            }
+        },
+        {
+            "name": "Debug-M3",
+            "inherits": "base",
+            "displayName": "Debug (Cortex-M3)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "MINI_BOOT_M3": "ON",
+                "MINI_BOOT_M4": "OFF"
+            }
+        },
+        {
+            "name": "Debug-M7",
+            "inherits": "base",
+            "displayName": "Debug (Cortex-M7)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "MINI_BOOT_M7": "ON",
+                "MINI_BOOT_M4": "OFF"
             }
         }
     ],
@@ -35,6 +66,18 @@
         {
             "name": "Debug",
             "configurePreset": "Debug"
+        },
+        {
+            "name": "Debug-M0",
+            "configurePreset": "Debug-M0"
+        },
+        {
+            "name": "Debug-M3",
+            "configurePreset": "Debug-M3"
+        },
+        {
+            "name": "Debug-M7",
+            "configurePreset": "Debug-M7"
         }
     ]
 }

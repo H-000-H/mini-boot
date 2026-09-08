@@ -14,7 +14,7 @@ project(pc_check C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 默认只支持 CRC 模式: 不用编 mbedtls, 一条命令秒出结果
+# 默认只支持 CRC 模式: 不用编 mbedtls
 option(TOOL_ENABLE_CRYPTO "编入 SHA/HMAC/AES 解密支持(需编译 mbedtls, 会慢一些)" OFF)
 
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)

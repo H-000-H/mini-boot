@@ -1,9 +1,7 @@
 /**
  * @copyright SPDX-License-Identifier: Apache-2.0
  * @file: err.h
- * @brief: 全项目统一错误码（0 表示成功，负数为具体失败原因）
- *         image / read 以及后续 boot 流程的所有接口都返回本文件定义的错误码，
- *         不再各自定义一套，避免调用方在多模块间判断时混淆
+ * @brief: 全项目统一错误码（0 表示成功，负数为具体失败原因）TODO暂时这套吧现在错误码有点多了有时间统一一下
  * 用法: int rc = image_read(...); if (rc != ERR_OK) { log("%s", err_str(rc)); }
  */
 #ifndef ERR_H

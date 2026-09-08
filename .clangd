@@ -1,7 +1,12 @@
 # clangd 配置
-# 1. 使用 CMake 导出的编译数据库
-# 2. clangd 不会从 arm-none-eabi-gcc 路径推断交叉目标，
-#    显式指定 ARM 目标三元组，否则 -mcpu 等选项按 x86 解析报错
+# 1. 使用 CMake 导出的编译数据库（clangd 默认只从源码目录向上查找，
+#    CMake 生成在 build/Debug/ 下，必须显式指路）
+# 2. clangd 不会从 arm-none-eabi-gcc 路径推断交叉目标（CMake 会把含空格的编译器
+#    路径转成 8.3 短名 AR19DD~1.EXE），需显式指定 ARM 目标三元组，否则 -mcpu
+#    按 x86 解析报错。armv7em = Cortex-M4/M7；切 M0/M3 时改成 armv6m/armv7m
+# 3. Compiler 指定真实驱动名，让 clangd 按 GCC 驱动模式解析
 CompileFlags:
   CompilationDatabase: build/Debug
-  Add: [--target=armv7em-none-eabi]
+  Compiler: arm-none-eabi-gcc
+  Add:
+    - --target=armv7em-none-eabi

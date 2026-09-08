@@ -1,7 +1,0 @@
-# ninja log v7
-11	99	8105687605130730	CMakeFiles/pc_check.dir/D_/device_platform/mini-ota/bootutil/src/image.c.obj	53b637b179d30eca
-22	101	8105687605243706	CMakeFiles/pc_check.dir/D_/device_platform/mini-ota/bootutil/src/err.c.obj	54a17619f1b16ebd
-15	103	8105687605178136	CMakeFiles/pc_check.dir/D_/device_platform/mini-ota/bootutil/src/read.c.obj	b69b6cc21c54c6d8
-25	109	8105687605271635	CMakeFiles/pc_check.dir/D_/device_platform/mini-ota/algorithm/src/crc.c.obj	4845480a5d7d996c
-2	446	8105687605047743	CMakeFiles/pc_check.dir/main.cpp.obj	7db6e0a97a2a0d80
-447	555	8105687609485858	pc_check.exe	13830c4a1763b4e6

@@ -1,4 +1,0 @@
-D:/device_platform/mini-ota/build/Debug/CMakeFiles/mbedcrypto.dir
-D:/device_platform/mini-ota/build/Debug/CMakeFiles/mini_boot.dir
-D:/device_platform/mini-ota/build/Debug/CMakeFiles/edit_cache.dir
-D:/device_platform/mini-ota/build/Debug/CMakeFiles/rebuild_cache.dir

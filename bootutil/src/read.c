@@ -14,9 +14,7 @@
 #if IMAGE_CRYPTO_ENABLE
 #include "algorithm.h"
 #include "mbedtls/cipher.h" /* MBEDTLS_ERR_CIPHER_AUTH_FAILED */
-#endif
 
-#if IMAGE_CRYPTO_ENABLE
 /*
  * @brief: 加密模式下的缓冲区比较，每次都比较所有字节，避免提前返回导致加密无效增强密钥的安全性
  * @param a: 待比较的第一个缓冲区
@@ -149,7 +147,10 @@ static int cbc_decrypt(const image_view_t *view, const uint8_t *key, size_t key_
         return rc;
     }
 
-    *out_plain_len = plain_len;
+    if (out_plain_len != NULL)
+    {
+        *out_plain_len = plain_len;
+    }
     return ERR_OK;
 }
 #endif /* IMAGE_READ_ENABLE_CRYPTO */
@@ -174,7 +175,10 @@ static int gcm_decrypt(const image_view_t *view, const uint8_t *key, size_t key_
         return ERR_AUTH_FAILED;
     }
 
-    *out_plain_len = view->payload_len;
+    if (out_plain_len != NULL)
+    {
+        *out_plain_len = view->payload_len;
+    }
     return ERR_OK;
 #else
     (void)view;
@@ -246,7 +250,10 @@ static int cbc_sha_decrypt(const image_view_t *view, const uint8_t *key, size_t 
         return rc;
     }
 
-    *out_plain_len = plain_len;
+    if (out_plain_len != NULL)
+    {
+        *out_plain_len = plain_len;
+    }
     return ERR_OK;
 #else
     (void)view;

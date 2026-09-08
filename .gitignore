@@ -1,3 +1,8 @@
 \.venv
 \uv.lock
 \.idea
+build/
+.cache/
+test/build/
+.arm-gcc/
+
