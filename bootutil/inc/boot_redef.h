@@ -111,7 +111,6 @@ typedef struct
 _Static_assert(offsetof(mini_boot_vector_t, reset_handler) == 4U,
                "mini_boot_vector_t 布局必须匹配 ARM 向量表：+0 MSP,+4 复位入口");
 #endif
-
 #ifdef __cplusplus
 }
 #endif

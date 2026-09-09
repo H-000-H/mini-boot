@@ -158,4 +158,10 @@ _Static_assert(CRC_TABLE_SIZE == 256, "CRC_TABLE_SIZE must be 256");
 #define CRC_MODEL_WIDTH     32u
 #endif
 
+#if defined (CONFIG_MINI_BOOT_LOAD_MAX)
+#define MINI_BOOT_LOAD_MAX CONFIG_MINI_BOOT_LOAD_MAX
+#elif defined (MINI_BOOT_LOAD_MAX)
+#else
+#define MINI_BOOT_LOAD_MAX 512/*默认页大小 */
+#endif
 #endif /* BOOT_CONFIG_H */

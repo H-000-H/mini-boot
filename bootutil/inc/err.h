@@ -29,6 +29,7 @@ extern "C" {
 #define ERR_HASH_FAILED     (-10) /**< 摘要/HMAC 计算失败（底层算法库返回错误） */
 #define ERR_PADDING         (-11) /**< PKCS#7 填充非法（CBC 去填充时校验） */
 #define ERR_OTA_OPEN     (-12) /**< OTA 未开启 */
+#define ERR_TRANSMIT     (-13) /**<传输错误 */
 /**
  * @brief 错误码转可读字符串
  * @param err [in] 本文件定义的错误码

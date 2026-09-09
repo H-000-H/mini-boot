@@ -2,7 +2,8 @@
  * @copyright SPDX-License-Identifier: Apache-2.0
  * @author: H-000-H
  * @file: flash.h
- * @brief: flash 操作接口的弱定义，方便移植到不同平台(平台自实现 flash_area_erase/write/read_operation)
+ * @brief: flash 操作接口的分发层：平台通过 flash_ops_register 注册 open/erase/write/read 实现，
+ *         未注册时所有接口返回 ERR_NOT_SUPPORTED。不依赖弱符号（GCC 扩展），PC 端测试可直接注册 mock
  */
 #ifndef BOOTUTIL_INC_FLASH_H
 #define BOOTUTIL_INC_FLASH_H
@@ -30,7 +31,7 @@ struct flash_sector
     uint32_t fs_size;  // sector 大小
 };
 
-struct flash_area 
+struct flash_area
 {
     uint32_t fa_id;             /**< flash 区域 ID*/
     uint32_t fa_device_id;      /**< flash 外部设备 ID */
@@ -39,7 +40,25 @@ struct flash_area
 };
 
 /**
- * @brief: 打开 flash 区域
+ * @brief: flash 移植操作表，平台填充四个实现后通过 flash_ops_register 注册
+ */
+typedef struct flash_ops
+{
+    int (*open)(uint32_t fa_id, const flash_area_t **area);                              /**< 打开区域 */
+    int (*erase)(const flash_area_t *area, uint32_t off, uint32_t len);                  /**< 擦除（覆盖到的扇区全擦，向上取整） */
+    int (*write)(const flash_area_t *area, uint32_t off, const void *buf, uint32_t len); /**< 写入 */
+    int (*read)(const flash_area_t *area, uint32_t off, void *buf, uint32_t len);        /**< 读取 */
+} flash_ops_t;
+
+/**
+ * @brief: 注册平台 flash 操作表（启动阶段调用一次；ops 指针与成员运行期须保持有效）
+ * @param ops: 平台实现的操作表
+ * @return: 0 表示成功，负数为失败原因（见 err.h）；ops 或任一成员为 NULL 返回 ERR_ARG
+ */
+int flash_ops_register(const flash_ops_t *ops);
+
+/**
+ * @brief: 打开 flash 区域（分发到注册的 ops->open）
  * @param fa_id: flash 区域 ID
  * @param area: 输出 flash 区域描述
  * @return: 0 表示成功，负数为失败原因（见 err.h）
