@@ -10,3 +10,7 @@ CompileFlags:
   Compiler: arm-none-eabi-gcc
   Add:
     - --target=armv7em-none-eabi
+    # 与真实构建保持一致：工程未开 FPU 选项，arm-none-eabi-gcc 默认即 soft ABI。
+    # 若这里让 clang 走硬浮点，CMSIS 会编入 FPSCR 相关代码，其 __builtin_arm_cdp
+    # 在 clang 下要求常量参数而报错（GCC 侧则无此问题）。
+    - -mfloat-abi=soft

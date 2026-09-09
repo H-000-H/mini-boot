@@ -13,6 +13,12 @@ typedef struct flash_area flash_area_t;
 typedef struct flash_sector flash_sector_t;
 #include <stdint.h>
 
+typedef enum 
+{
+    FLASH_AREA_ID_IMAGE_0=0,
+    FLASH_AREA_ID_IMAGE_1,
+    FLASH_AREA_ID_BOOTLOADER,
+} flash_area_id_t;
 /**
  * @brief: flash 扇区信息 桥接结构体
  * @param fs_off: 相对 flash 区域起始偏移（和 *_operation 的 off 一致）
@@ -23,7 +29,6 @@ struct flash_sector
     uint32_t fs_off;   // 相对 area 起始偏移（和 *_operation 的 off 一致）
     uint32_t fs_size;  // sector 大小
 };
-
 
 struct flash_area 
 {

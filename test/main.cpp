@@ -1,16 +1,15 @@
 /**
  * @copyright: SPDX-License-Identifier: Apache-2.0
  * @file: main.cpp
- * @brief: OTA 镜像读取/校验工具（宿主机编译运行，板上用 image.c + read.c + crc.c）
- *        解析与校验全部走 bootutil 的 image.h/read.h，本文件只负责读文件与打印
- * 编译(仅 CRC): g++ -std=c++17 test/main.cpp bootutil/src/image.c bootutil/src/read.c ^
+ * @brief: OTA 镜像读取/校验工具（宿主机编译运行，板上用 read.c + crc.c）
+ *        解析与校验全部走 bootutil 的 read.h，本文件只负责读文件与打印
+ * 编译(仅 CRC): g++ -std=c++17 test/main.cpp bootutil/src/read.c ^
  *                    bootutil/src/err.c algorithm/src/crc.c ^
  *                    -I bootutil/inc -I algorithm/inc -o test/main.exe
  * 编译(含加密): 加密默认开(boot_config.h 的 IMAGE_CRYPTO_ENABLE=1), 只需把 algorithm/src 下的
  *               .c 与 mbedtls 一起编译链接; 不想编解密则 -DCONFIG_IMAGE_CRYPTO=0
- * 用法: main.exe <image.bin> <plain.bin> [--check CRC|SHA|GCM|CBC|CBC_SHA]
- *                [--key hex] [--version_len N] [--tag_len N] [--front] [--max_diff N]
- *       参数必须与 tools/main.py 打包时一致（version/tag 变长，格式里不记录长度）
+ * 用法: main.exe <image.bin> <plain.bin> [--key hex] [--mac_key hex] [--max_diff N]
+ *       模式与 version/tag 长度由镜像末尾 meta 自描述, 只需密钥与打包时一致
  * 退出码: 0 校验通过且 payload 与原始 bin 一致, 1 校验失败或存在差异, 2 用法/环境问题
  */
 #include "read.h"
@@ -33,12 +32,8 @@ struct options
 {
     std::string image_path;
     std::string plain_path;
-    image_check_t mode = IMAGE_CHECK_CRC;
     std::vector<uint8_t> key;      /* 加密密钥，十六进制解析 */
     std::vector<uint8_t> mac_key;  /* MAC 密钥（CBC_SHA），空则回退用 key */
-    size_t version_len = 5;   /* 对应打包默认 version "1.0.0" */
-    size_t tag_len = 0;       /* 对应打包默认 tag "" */
-    int is_front = 0;
     size_t max_diff = 16;
 };
 
@@ -52,24 +47,11 @@ void print_usage()
 {
     std::cout <<
         "用法: main.exe <image.bin> <plain.bin> [选项]\n"
-        "  --check CRC|SHA|GCM|CBC|CBC_SHA  打包模式(默认 CRC), 决定 aux 长度与校验方式\n"
-        "  --key hex                        解密密钥(16/24/32 字节)，GCM/CBC/CBC_SHA 必填\n"
-        "  --mac_key hex                    MAC 密钥(CBC_SHA)，不给则复用 --key\n"
-        "  --version_len N                  version 字节数(默认 5, 如 1.0.0)\n"
-        "  --tag_len N                      tag 字节数(默认 0)\n"
-        "  --front                          元数据在头部(默认在尾部)\n"
-        "  --max_diff N                     最多列出多少条差异(默认 16)\n"
+        "  --key hex       解密密钥(16/24/32 字节)，GCM/CBC/CBC_SHA 必填\n"
+        "  --mac_key hex   MAC 密钥(CBC_SHA)，不给则复用 --key\n"
+        "  --max_diff N    最多列出多少条差异(默认 16)\n"
+        "模式与 version/tag 长度从镜像末尾 meta 自描述, 无需手动指定\n"
         "退出码: 0 校验通过且一致, 1 校验失败或存在差异, 2 用法/环境问题\n";
-}
-
-bool parse_mode(const std::string &text, image_check_t &mode)
-{
-    if (text == "CRC")     { mode = IMAGE_CHECK_CRC;     return true; }
-    if (text == "SHA")     { mode = IMAGE_CHECK_SHA;     return true; }
-    if (text == "GCM")     { mode = IMAGE_CHECK_GCM;     return true; }
-    if (text == "CBC")     { mode = IMAGE_CHECK_CBC;     return true; }
-    if (text == "CBC_SHA") { mode = IMAGE_CHECK_CBC_SHA; return true; }
-    return false;
 }
 
 const char *mode_name(image_check_t mode)
@@ -157,16 +139,7 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
-        if (arg == "--check")
-        {
-            if (i + 1 >= argc || !parse_mode(argv[++i], opt.mode))
-            {
-                std::cerr << "[错误] --check 取值非法\n";
-                print_usage();
-                return 2;
-            }
-        }
-        else if (arg == "--key")
+        if (arg == "--key")
         {
             if (i + 1 >= argc || !parse_hex_key(argv[++i], opt.key))
             {
@@ -184,22 +157,16 @@ int main(int argc, char *argv[])
                 return 2;
             }
         }
-        else if (arg == "--version_len" || arg == "--tag_len" || arg == "--max_diff")
+        else if (arg == "--max_diff")
         {
             size_t value = 0;
             if (i + 1 >= argc || !parse_size(argv[++i], value))
             {
-                std::cerr << "[错误] " << arg << " 取值非法\n";
+                std::cerr << "[错误] --max_diff 取值非法\n";
                 print_usage();
                 return 2;
             }
-            if (arg == "--version_len")     { opt.version_len = value; }
-            else if (arg == "--tag_len")    { opt.tag_len = value; }
-            else                            { opt.max_diff = value; }
-        }
-        else if (arg == "--front")
-        {
-            opt.is_front = 1;
+            opt.max_diff = value;
         }
         else if (!arg.empty() && arg[0] == '-')
         {
@@ -236,29 +203,35 @@ int main(int argc, char *argv[])
         return 2;
     }
 
+    /* 先解析 meta 拿到模式, 才知道是否需要解密缓冲区 */
+    image_view_t view = {};
+    int rc = image_parse(image_data.data(), image_data.size(), &view);
+    if (rc != ERR_OK)
+    {
+        std::cerr << "[错误] 镜像解析失败: " << err_str(rc) << " (" << rc << ")\n"
+                  << "       请核对文件是否为 tools/main.py 打包的镜像(末尾 4B meta)\n";
+        return 2;
+    }
+
     /* 加密模式需要解密，先备好输出缓冲区（明文不会比密文长） */
-    const bool crypto = is_crypto_mode(opt.mode);
+    const bool crypto = is_crypto_mode(view.mode);
     std::vector<uint8_t> plain_out;
     if (crypto)
     {
         plain_out.resize(image_data.size());
     }
 
+    /* 模式与变长字段长度来自镜像 meta, cfg 只需密钥 */
     image_read_cfg_t cfg = {};
-    cfg.mode = opt.mode;
-    cfg.version_len = opt.version_len;
-    cfg.tag_len = opt.tag_len;
-    cfg.is_front = opt.is_front;
     cfg.key = opt.key.empty() ? nullptr : opt.key.data();
     cfg.key_len = opt.key.size();
     cfg.mac_key = opt.mac_key.empty() ? nullptr : opt.mac_key.data();
     cfg.mac_key_len = opt.mac_key.size();
 
-    image_view_t view = {};
     uint32_t crc_calc = 0;
     size_t plain_len = 0;
 
-    int rc = image_read(image_data.data(), image_data.size(), &cfg,
+    rc = image_read_payload(image_data.data(), image_data.size(), &cfg,
                         plain_out.empty() ? nullptr : plain_out.data(),
                         plain_out.size(), &view, &plain_len, &crc_calc);
     if (rc != ERR_OK)
@@ -271,7 +244,7 @@ int main(int argc, char *argv[])
         std::cerr << "[错误] 镜像读取失败: " << err_str(rc) << " (" << rc << ")\n";
         if (image_bad)
         {
-            std::cerr << "       镜像校验未通过：内容可能被篡改, 或打包参数与本命令不一致\n";
+            std::cerr << "       镜像校验未通过：内容可能被篡改, 或密钥与本命令不一致\n";
         }
         else if (rc == ERR_UNSUPPORTED)
         {
@@ -279,20 +252,20 @@ int main(int argc, char *argv[])
         }
         else
         {
-            std::cerr << "       请核对 --check/--key/--version_len/--tag_len/--front 是否与打包时一致\n";
+            std::cerr << "       请核对 --key/--mac_key 是否与打包时一致\n";
         }
         return image_bad ? 1 : 2;
     }
 
     size_t overhead = 0;
-    (void)image_overhead(opt.mode, opt.version_len, opt.tag_len, &overhead);
+    (void)image_overhead(view.mode, view.version_len, view.tag_len, &overhead);
     const size_t payload_off = static_cast<size_t>(view.payload - image_data.data());
 
     std::cout << "Image   : " << opt.image_path << " (" << image_data.size() << " B)\n"
               << "Plain   : " << opt.plain_path << " (" << plain_data.size() << " B)\n"
-              << "Mode    : " << mode_name(opt.mode)
+              << "Mode    : " << mode_name(view.mode)
               << " (aux " << view.aux_len << " B, overhead " << overhead << " B, "
-              << (opt.is_front ? "元数据在前" : "元数据在后") << ")\n"
+              << (view.is_front ? "元数据在前" : "元数据在后") << ")\n"
               << "Version : \"" << as_text(view.version, view.version_len) << "\" ("
               << view.version_len << " B)\n"
               << "Tag     : \"" << as_text(view.tag, view.tag_len) << "\" ("
@@ -300,17 +273,17 @@ int main(int argc, char *argv[])
               << "Payload : " << view.payload_len << " B @ offset " << payload_off << "\n"
               << "CRC32   : stored 0x" << std::hex << std::setw(8) << std::setfill('0')
               << view.crc_stored << std::dec;
-    if (opt.mode == IMAGE_CHECK_CRC)
+    if (view.mode == IMAGE_CHECK_CRC)
     {
         std::cout << " / calc 0x" << std::hex << std::setw(8) << std::setfill('0')
                   << crc_calc << std::dec << " -> MATCH";
     }
     else
     {
-        std::cout << " (该模式由 " << mode_name(opt.mode) << " 校验, CRC 字段不参与判定)";
+        std::cout << " (该模式由 " << mode_name(view.mode) << " 校验, CRC 字段不参与判定)";
     }
     std::cout << "\n"
-              << "Verify  : OK (" << mode_name(opt.mode) << " 校验通过)\n";
+              << "Verify  : OK (" << mode_name(view.mode) << " 校验通过)\n";
     if (crypto)
     {
         std::cout << "Decrypt : 明文 " << plain_len << " B (已解密并去填充)\n";

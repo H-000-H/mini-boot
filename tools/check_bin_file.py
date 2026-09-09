@@ -5,14 +5,15 @@
   dump : 十六进制查看 bin 原文 (--offset 支持负数, 从文件尾倒数)
   diff : 对比两个 bin, 邻近差异合并为差异块并展示两侧内容, 报告自动生成 txt
          (默认写入当前目录 diff_report.txt, 第三个参数为目录时写入该目录并额外导出差异片段)
-  image_diff : 解析 main.py 打包的 OTA 镜像, 解密 payload 后对比 (--plain_a/--plain_b 指定某侧为未打包原始 bin)
+  image_diff : 解析 main.py 打包的 OTA 镜像 (模式/变长长度由末尾 meta 自描述), 解密 payload 后对比
+               (--plain_a/--plain_b 指定某侧为未打包原始 bin)
 用法示例 :
   python tools/check_bin_file.py dump image_test.bin --length 64          # 查看前 64 字节
   python tools/check_bin_file.py dump image_test.bin --offset -64         # 查看末尾 64 字节
   python tools/check_bin_file.py diff image_test.bin bootloader.bin       # 全文对比, 生成 diff_report.txt
   python tools/check_bin_file.py diff a.bin b.bin ./diff_out(可改)         # 对比并导出差异片段
-  python tools/check_bin_file.py image_diff a.bin b.bin --check GCM --key 0011..ff             # 两个加密镜像解密对比
-  python tools/check_bin_file.py image_diff image.bin app.bin --check GCM --key 0011..ff --plain_b   # 镜像解密后与原始 bin 对比
+  python tools/check_bin_file.py image_diff a.bin b.bin --key 0011..ff             # 两个加密镜像解密对比
+  python tools/check_bin_file.py image_diff image.bin app.bin --key 0011..ff --plain_b   # 镜像解密后与原始 bin 对比
 退出码 : diff/image_diff 完全一致返回 0, 存在差异返回 1, 可用于脚本判断
 """
 from __future__ import annotations
@@ -26,8 +27,12 @@ import sys
 HEX_WIDTH = 16
 DEFAULT_CONTEXT = 8
 DEFAULT_MERGE_GAP = 8
-# 对应 main.py check_cripted 各模式的 aux 布局: GCM=nonce(12B)+tag(16B) CBC=iv(16B) CBC_SHA=iv(16B)+hmac(32B) SHA=sha256(32B)
+# 对应 main.py 打包各模式的 aux 布局: GCM=nonce(12B)+tag(16B) CBC=iv(16B) CBC_SHA=iv(16B)+hmac(32B) SHA=sha256(32B)
 _IMAGE_AUX_LEN = {"GCM": 12 + 16, "CBC": 16, "CBC_SHA": 16 + 32, "SHA": 32, "CRC": 0}
+# 设备端 read.h 的 image_check_t 枚举值, 镜像末尾 meta 里存的是这套编号
+_IMAGE_MODE_CODE = {"CRC": 0, "SHA": 1, "GCM": 2, "CBC": 3, "CBC_SHA": 4}
+_MODE_BY_CODE = {v: k for k, v in _IMAGE_MODE_CODE.items()}
+_IMAGE_META_MAGIC = 0xA5
 
 
 def _parse_int(text: str) -> int:
@@ -187,28 +192,41 @@ def _finish_diff(lines: list[str], data_a: bytes, data_b: bytes, args: argparse.
     return bool(chunks)
 
 
-def _parse_image(data: bytes, path: str, mode: str, version_len: int, tag_len: int, is_front: bool) -> dict:
-    """按 main.py 打包布局拆出 crc/version/tag/aux/payload"""
+def _parse_image(data: bytes, path: str) -> dict:
+    """按 main.py 打包布局拆出 crc/version/tag/aux/payload (模式与变长长度来自末尾 4B meta)"""
+    if len(data) < 8:
+        raise SystemExit(f"[错误] {path} 大小 {len(data)} 字节, 小于最小镜像 8 字节")
+    m = data[-4:]
+    if m[0] != _IMAGE_META_MAGIC:
+        raise SystemExit(f"[错误] {path} 末尾 meta 魔数 0x{m[0]:02x} != 0xA5, "
+                         f"不是 main.py 打包的镜像 (核对打包工具版本)")
+    mode_code = m[1] & 0x7F
+    if mode_code not in _MODE_BY_CODE:
+        raise SystemExit(f"[错误] {path} meta 模式编号 {mode_code} 非法")
+    mode = _MODE_BY_CODE[mode_code]
+    version_len, tag_len = m[2], m[3]
     aux_len = _IMAGE_AUX_LEN[mode]
     overhead = 4 + version_len + tag_len + aux_len
-    if len(data) < overhead:
+    body = data[:-4]  # 末尾 meta 之外的镜像主体
+    if len(body) < overhead:
         raise SystemExit(
-            f"[错误] {path} 大小 {len(data)} 字节, 小于 {mode} 布局最小 {overhead} 字节"
-            f" (核对 --check/--version_len/--tag_len/--is_front)")
-    if is_front:
+            f"[错误] {path} 大小 {len(data)} 字节, 小于 {mode} 布局最小 {overhead + 4} 字节")
+    if m[1] & 0x80:  # is_front: 元数据在头部
         return {
-            "crc": int.from_bytes(data[:4], "little"),
-            "version": data[4:4 + version_len],
-            "tag": data[4 + version_len:4 + version_len + tag_len],
-            "aux": data[4 + version_len + tag_len:overhead],
-            "payload": data[overhead:],
+            "mode": mode, "is_front": True,
+            "crc": int.from_bytes(body[:4], "little"),
+            "version": body[4:4 + version_len],
+            "tag": body[4 + version_len:4 + version_len + tag_len],
+            "aux": body[4 + version_len + tag_len:overhead],
+            "payload": body[overhead:],
         }
     return {
-        "crc": int.from_bytes(data[-4:], "little"),
-        "version": data[-4 - tag_len - version_len:-4 - tag_len],
-        "tag": data[-4 - tag_len:-4],
-        "aux": data[-overhead:-4 - tag_len - version_len],
-        "payload": data[:-overhead],
+        "mode": mode, "is_front": False,
+        "crc": int.from_bytes(body[-4:], "little"),
+        "version": body[-4 - tag_len - version_len:-4 - tag_len],
+        "tag": body[-4 - tag_len:-4],
+        "aux": body[-overhead:-4 - tag_len - version_len],
+        "payload": body[:-overhead],
     }
 
 
@@ -230,16 +248,8 @@ def _cmd_image_diff(args: argparse.Namespace) -> bool:
     import m_crc.image_crc as crc_mod  # 按需加载
     import m_dsig.image_sha as sha
 
-    if args.check in ("GCM", "CBC", "CBC_SHA"):
-        if not args.key:
-            raise SystemExit(f"[错误] --check {args.check} 需要 --key (hex)")
-        key = bytes.fromhex(args.key)
-        if len(key) not in (16, 24, 32):
-            raise SystemExit("[错误] --key 必须是 16/24/32 字节的 hex")
-    else:
-        key = b""
-    if args.version_len < 0 or args.tag_len < 0:
-        raise SystemExit("[错误] --version_len/--tag_len 不能为负数")
+    key = b""      # 首次遇到加密模式时才解析 --key (模式由各侧镜像 meta 自描述)
+    mac_key = b""  # CBC_SHA 的 MAC 密钥, 缺省回退用 key
 
     lines: list[str] = []
     plains: list[bytes] = []
@@ -251,25 +261,42 @@ def _cmd_image_diff(args: argparse.Namespace) -> bool:
             lines += [f"{label}: {path}",
                       f"  原始 bin (未解析镜像头): {len(data)} 字节  md5: {_md5(data)}"]
             continue
-        info = _parse_image(data, path, args.check, args.version_len, args.tag_len, args.is_front)
+        info = _parse_image(data, path)
+        mode = info["mode"]
+        if mode in ("GCM", "CBC", "CBC_SHA"):
+            if not key:
+                if not args.key:
+                    raise SystemExit(f"[错误] {mode} 模式需要 --key (hex)")
+                key = bytes.fromhex(args.key)
+                if len(key) not in (16, 24, 32):
+                    raise SystemExit("[错误] --key 必须是 16/24/32 字节的 hex")
         # main.py 打包时 crc 对 payload(密文/明文)计算, 校验也按同一口径
         crc_calc = crc_mod.crc_generic(info["payload"], args.crc_init, args.crc_refin,
                                        args.crc_refout, args.crc_xor_out, args.crc_poly)
         crc_note = "一致" if crc_calc == info["crc"] else f"不一致! 计算 0x{crc_calc:08x}"
         lines += [
             f"{label}: {path}",
-            f"  镜像[{args.check} 头部{'在前' if args.is_front else '在后'}] "
+            f"  镜像[{mode} 头部{'在前' if info['is_front'] else '在后'}] "
             f"version={info['version'].decode('utf-8', 'replace')!r} "
             f"tag={info['tag'].decode('utf-8', 'replace')!r} aux={len(info['aux'])}B",
             f"  crc: 存储 0x{info['crc']:08x} {crc_note}",
         ]
-        if args.check == "SHA":
+        if mode == "SHA":
             ok = sha.sha256(info["payload"]) == info["aux"]
             lines.append(f"  sha256 校验: {'一致' if ok else '不一致!'}")
-        elif args.check == "CBC_SHA":
-            ok = hmac.new(key, info["payload"], hashlib.sha256).digest() == info["aux"][16:]
+        elif mode == "CBC_SHA":
+            if not mac_key:
+                if args.mac_key:
+                    mac_key = bytes.fromhex(args.mac_key)
+                    if len(mac_key) not in (16, 24, 32):
+                        raise SystemExit("[错误] --mac_key 必须是 16/24/32 字节的 hex")
+                else:
+                    mac_key = key
+            # hmac 覆盖 iv||ciphertext, 与打包端/设备端口径一致
+            ok = hmac.new(mac_key, info["aux"][:16] + info["payload"],
+                          hashlib.sha256).digest() == info["aux"][16:]
             lines.append(f"  hmac 校验: {'一致' if ok else '不一致! (镜像可能被篡改, 仍继续解密)'}")
-        plain = _decrypt_payload(args.check, info["payload"], info["aux"], key)
+        plain = _decrypt_payload(mode, info["payload"], info["aux"], key)
         plains.append(plain)
         dec_images.append((path, plain))
         lines.append(f"  解密 payload: {len(plain)} 字节  md5: {_md5(plain)}")
@@ -302,16 +329,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("--gap", type=_parse_int, default=DEFAULT_MERGE_GAP, help="相距不超过该字节数的差异合并为一块 (默认 8)")
     p_diff.add_argument("extract_dir", nargs="?", default=None, help="可选: 导出差异片段到该目录")
 
-    p_img = sub.add_parser("image_diff", help="解析 main.py 打包的 OTA 镜像并解密 payload 后对比")
+    p_img = sub.add_parser("image_diff", help="解析 main.py 打包的 OTA 镜像并解密 payload 后对比 (模式由镜像 meta 自描述)")
     p_img.add_argument("file_a", help="文件 a (OTA 镜像, 或 --plain_a 指定时的原始 bin)")
     p_img.add_argument("file_b", help="文件 b (OTA 镜像, 或 --plain_b 指定时的原始 bin)")
-    p_img.add_argument("--check", default="CRC", choices=list(_IMAGE_AUX_LEN),
-                       help="打包时的校验/加密模式, 决定 aux 长度与解密方式 (默认 CRC)")
     p_img.add_argument("--key", default="", help="hex key 16/24/32 字节, GCM/CBC/CBC_SHA 必填")
-    p_img.add_argument("--version_len", type=_parse_int, default=5, help="打包时 version 字符串长度 (默认 5, 如 1.0.0)")
-    p_img.add_argument("--tag_len", type=_parse_int, default=0, help="打包时 tag 字符串长度 (默认 0)")
-    p_img.add_argument("--is_front", action=argparse.BooleanOptionalAction, default=False,
-                       help="镜像头部在前 (默认在后, 可用 --no-is_front 显式关闭)")
+    p_img.add_argument("--mac_key", default="", help="hex MAC key (CBC_SHA); 缺省复用 --key")
     p_img.add_argument("--plain_a", action="store_true", help="a 侧为未打包的原始 bin")
     p_img.add_argument("--plain_b", action="store_true", help="b 侧为未打包的原始 bin")
     p_img.add_argument("--crc_init", type=_parse_int, default=0xffffffff, help="CRC寄存器初始值 (与打包时一致)")

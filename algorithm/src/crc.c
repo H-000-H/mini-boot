@@ -39,17 +39,13 @@ static uint32_t reflect(uint32_t value, uint8_t width)
  * @return uint32_t: 寄存器值
  */
 static uint32_t crc_bitwise_engine(const uint8_t *data, size_t length,
-                                   uint32_t init, int refin,
+                                   uint32_t reg, int refin,
                                    uint32_t poly, uint8_t width, uint32_t mask)
 {
-    uint32_t reg;
+    /* 注意：reg/poly 已由调用方归一化（refin 时取反射形式并掩码），此处直接续算 */
 
     if (refin)
     {
-        /* 输入反射：右移引擎，字节直接异或到低位，多项式取反射形式 */
-        reg = reflect(init, width) & mask;
-        poly = reflect(poly, width) & mask;
-
         while (length-- > 0)
         {
             uint8_t byte = *data++;
@@ -77,11 +73,8 @@ static uint32_t crc_bitwise_engine(const uint8_t *data, size_t length,
     }
     else
     {
-        /* 输入不反射：左移引擎，字节对齐到寄存器高位 */
+        /* 输入不反射：左移引擎，字节对齐到寄存器高位（reg/poly 已掩码） */
         uint32_t top_bit = 1u << (width - 1);
-
-        reg = init & mask;
-        poly = poly & mask;
 
         while (length-- > 0)
         {
@@ -175,25 +168,14 @@ static void crc_table_build(uint32_t poly, uint8_t width, int refin)
  * @return uint32_t: 寄存器值
  */
 static uint32_t crc_table_engine(const uint8_t *data, size_t length,
-                                 uint32_t init, int refin,
+                                 uint32_t reg, int refin,
                                  uint32_t poly, uint8_t width, uint32_t mask)
 {
-    uint32_t reg;
+    /* reg/poly 已由调用方归一化 */
 
     if (width < 8)
     {
-        return crc_bitwise_engine(data, length, init, refin, poly, width, mask);
-    }
-
-    if (refin)
-    {
-        reg = reflect(init, width) & mask;
-        poly = reflect(poly, width) & mask;
-    }
-    else
-    {
-        reg = init & mask;
-        poly = poly & mask;
+        return crc_bitwise_engine(data, length, reg, refin, poly, width, mask);
     }
 
     /* 参数变化时重建表 */
@@ -246,25 +228,66 @@ static uint32_t crc_finalize(uint32_t reg, uint8_t width, int refin, int refout,
     return (reg ^ xor_out) & mask;
 }
 
-uint32_t crc_generic(const uint8_t *data, size_t length, uint32_t init,
-                     int refin, int refout, uint32_t xor_out,
-                     uint32_t poly, uint8_t width)
+/*-------------------------------------------------------------------------------------------------------*/
+/* 分段续算实现                                                                                          */
+/*-------------------------------------------------------------------------------------------------------*/
+void crc_stream_start(crc_stream_t *s, uint32_t init, int refin, int refout,
+                      uint32_t xor_out, uint32_t poly, uint8_t width)
 {
     uint32_t mask;
-    uint32_t reg;
 
-    if (width == 0 || width > 32)
+    if (s == NULL || width == 0 || width > 32)
+    {
+        s->width = 0; /* 标记无效状态，feed/finish 将直接返回 0 */
+        return;
+    }
+
+    mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+    s->width   = width;
+    s->refin   = (refin != 0) ? 1u : 0u;
+    s->refout  = (refout != 0) ? 1u : 0u;
+    s->xor_out = xor_out;
+
+    if (refin)
+    {
+        s->reg  = reflect(init, width) & mask;
+        s->poly = reflect(poly, width) & mask;
+    }
+    else
+    {
+        s->reg  = init & mask;
+        s->poly = poly & mask;
+    }
+}
+
+void crc_stream_feed(crc_stream_t *s, const uint8_t *data, size_t length)
+{
+    uint32_t mask;
+
+    if (s == NULL || s->width == 0 || s->width > 32)
+    {
+        return;
+    }
+
+    mask = (s->width >= 32) ? 0xFFFFFFFFu : ((1u << s->width) - 1u);
+
+#if CRC_MODE
+    s->reg = crc_table_engine(data, length, s->reg, s->refin, s->poly, s->width, mask);
+#else
+    s->reg = crc_bitwise_engine(data, length, s->reg, s->refin, s->poly, s->width, mask);
+#endif
+}
+
+uint32_t crc_stream_finish(crc_stream_t *s)
+{
+    uint32_t mask;
+
+    if (s == NULL || s->width == 0 || s->width > 32)
     {
         return 0;
     }
 
-    mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+    mask = (s->width >= 32) ? 0xFFFFFFFFu : ((1u << s->width) - 1u);
 
-#if CRC_MODE
-    reg = crc_table_engine(data, length, init, refin, poly, width, mask);
-#else
-    reg = crc_bitwise_engine(data, length, init, refin, poly, width, mask);
-#endif
-
-    return crc_finalize(reg, width, refin, refout, xor_out, mask);
+    return crc_finalize(s->reg, s->width, s->refin, s->refout, s->xor_out, mask);
 }

@@ -1,0 +1,25 @@
+MEMORY
+{
+    flash (rx) : ORIGIN = @FLASH_APP_START@, LENGTH = @FLASH_APP_LENGTH@
+    ram (rwx)  : ORIGIN = @RAM_APP_START@, LENGTH = @RAM_APP_LENGTH@
+}
+
+SECTIONS
+{
+    .isr_vector :
+    {
+        KEEP(*(.isr_vector))
+    } > flash
+    .text :
+    {
+        *(.text*)
+    } > flash
+    .data :
+    {
+        *(.data*)
+    } > ram
+    .bss :
+    {
+        *(.bss*)
+    } > ram
+}

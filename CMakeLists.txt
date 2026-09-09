@@ -2,11 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 set(CMAKE_PROJECT_NAME mini_boot)
 
-# clangd 需要从驱动名（arm-none-eabi-gcc）推断 ARM 交叉目标；而 CMake 会把含空格的
-# 编译器路径转成 8.3 短名（AR19DD~1.EXE）写进编译数据库，导致 clangd 目标推断失败、
-# 按 x86 主机解析、头文件大面积报错。
-# 解法：用无空格的目录联接 .arm-gcc 指向工具链根目录，编译命令里保留完整可识别的驱动名。
-# 注意：不能用 REALPATH，它会把联接还原回带空格的真实路径，前功尽弃。
+#clangd要吃长路径
 set(MINI_BOOT_GCC_JUNCTION "${CMAKE_CURRENT_SOURCE_DIR}/.arm-gcc/bin/arm-none-eabi-gcc.exe")
 if(EXISTS "${MINI_BOOT_GCC_JUNCTION}")
     set(CMAKE_C_COMPILER   "${MINI_BOOT_GCC_JUNCTION}" CACHE FILEPATH "C compiler (space-free path)" FORCE)
@@ -25,13 +21,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ==== 目标核选择：option 注入机制 ====
 # 四选一，开启对应 MINI_BOOT_Mx 即选择目标核，-mcpu / CMSIS 核头 / ports/<core> 随之注入：d
-option(MINI_BOOT_M0 "选择 Cortex-M0 为目标核" OFF)
+option(MINI_BOOT_M0 "选择 Cortex-M0 为目标核（无 VTOR）" OFF)
+option(MINI_BOOT_M0P "选择 Cortex-M0+ 为目标核（有 VTOR，注意与 M0 区分）" OFF)
 option(MINI_BOOT_M3 "选择 Cortex-M3 为目标核" OFF)
 #TODO 需要最后改为off
 option(MINI_BOOT_M4 "选择 Cortex-M4 为目标核(默认测试,STM32F407)" ON)
 option(MINI_BOOT_M7 "选择 Cortex-M7 为目标核" OFF)
 
-set(MINI_BOOT_CORES M0 M3 M4 M7)
+set(MINI_BOOT_CORES M0 M0P M3 M4 M7)
 set(MINI_BOOT_CORE_SELECTED "")
 set(_mini_boot_on_count 0)
 foreach(_core IN LISTS MINI_BOOT_CORES)
@@ -42,11 +39,13 @@ foreach(_core IN LISTS MINI_BOOT_CORES)
 endforeach()
 
 if(_mini_boot_on_count GREATER 1)
-    message(FATAL_ERROR "MINI_BOOT_M0/M3/M4/M7 同时只能开启一个，请检查 preset 或 CMake 缓存")
+    message(FATAL_ERROR "MINI_BOOT_M0/M0P/M3/M4/M7 同时只能开启一个，请检查 preset 或 CMake 缓存")
 endif()
 
 if(MINI_BOOT_CORE_SELECTED STREQUAL "M0")
     set(MINI_BOOT_ARCH_FLAGS -mcpu=cortex-m0 -mthumb)
+elseif(MINI_BOOT_CORE_SELECTED STREQUAL "M0P")
+    set(MINI_BOOT_ARCH_FLAGS -mcpu=cortex-m0plus -mthumb)
 elseif(MINI_BOOT_CORE_SELECTED STREQUAL "M3")
     set(MINI_BOOT_ARCH_FLAGS -mcpu=cortex-m3 -mthumb)
 elseif(MINI_BOOT_CORE_SELECTED STREQUAL "M4")
@@ -60,8 +59,10 @@ if(MINI_BOOT_ARCH_FLAGS)
     add_compile_options(${MINI_BOOT_ARCH_FLAGS})
 endif()
 
-# ==== 工具链系统头目录（newlib / GCC 内置头）====
-# 目的：把 string.h/stdint.h 等标准头的路径显式写进编译命令（compile_commands.json），
+# 选中核的宏（如 MINI_BOOT_M4=1）：必须作用于**所有**目标。
+# 核心库头文件（boot_redef.h）靠它选择核相关分支
+add_compile_definitions(MINI_BOOT_${MINI_BOOT_CORE_SELECTED}=1)
+
 get_filename_component(ARM_TOOLCHAIN_ROOT "${CMAKE_C_COMPILER}/../.." ABSOLUTE)
 file(GLOB ARM_GCC_INTERNAL_INC "${ARM_TOOLCHAIN_ROOT}/lib/gcc/arm-none-eabi/*/include")
 set(ARM_TOOLCHAIN_SYS_INC
@@ -118,6 +119,7 @@ add_library(${CMAKE_PROJECT_NAME}
 STATIC  ${MINI_BOOT_SRC}
 bootutil/inc/read.h
 bootutil/src/read.c
+bootutil/inc/start.h
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME}
@@ -128,8 +130,43 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 PUBLIC mbedcrypto
 )
 
+# ==== 体系结构层 arch/arm/cortex-m：核相关原语（汇编实现，与芯片厂商无关）====
+set(MINI_BOOT_ARCH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/arch/arm/cortex-m)
+file(GLOB MINI_BOOT_ARCH_SRC CONFIGURE_DEPENDS
+    ${MINI_BOOT_ARCH_DIR}/*.S
+)
+add_library(arch STATIC ${MINI_BOOT_ARCH_SRC})
+target_include_directories(arch
+PUBLIC  ${MINI_BOOT_ARCH_DIR}
+)
+target_link_libraries(${CMAKE_PROJECT_NAME}
+PUBLIC arch
+)
+set(FLASH_APP_START 0x08010000 CACHE STRING "Start address of the application in flash" FORCE)
+set(FLASH_APP_LENGTH 0x10000 CACHE STRING "Length of the application in flash" FORCE)
+set(RAM_APP_START 0x20000000 CACHE STRING "Start address of the application in RAM" FORCE)
+set(RAM_APP_LENGTH 0x4000 CACHE STRING "Length of the application in RAM" FORCE)
+
+# 同一份值喂给 C 代码：boot_config.h 用 CONFIG_XXX 接收，保证 .ld 与 C 里的相同
+add_compile_definitions(
+    CONFIG_FLASH_APP_START=${FLASH_APP_START}
+    CONFIG_FLASH_APP_LENGTH=${FLASH_APP_LENGTH}
+    CONFIG_RAM_APP_START=${RAM_APP_START}
+    CONFIG_RAM_APP_LENGTH=${RAM_APP_LENGTH}
+)
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/ota_memory.ld.in
+    ${CMAKE_CURRENT_BINARY_DIR}/mini_boot_ota_memory.ld
+    @ONLY
+)
+
+
+target_link_options(${CMAKE_PROJECT_NAME} PUBLIC
+    "-T${CMAKE_CURRENT_BINARY_DIR}/mini_boot_ota_memory.ld"
+)
 # ==== 平台层 ports/<core>：随 option 注入 ====
-# 芯片相关的一切（启动文件、CMSIS-Core 核头、核选择宏）
+# 芯片相关的一切（启动文件、自研寄存器定义、核选择宏）
 if(MINI_BOOT_CORE_SELECTED)
     string(TOLOWER ${MINI_BOOT_CORE_SELECTED} MINI_BOOT_CORE_DIR)
     set(MINI_BOOT_PORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ports/${MINI_BOOT_CORE_DIR})
@@ -139,14 +176,12 @@ if(MINI_BOOT_CORE_SELECTED)
     )
     if(MINI_BOOT_PLATFORM_SRC)
         add_library(platform STATIC ${MINI_BOOT_PLATFORM_SRC})
+        # 平台层要实现核心层声明的钩子（boot_redef.h/err.h），因此需要核心层头文件路径
         target_include_directories(platform
         PUBLIC  ${MINI_BOOT_PORT_DIR}
-                ${CMAKE_CURRENT_SOURCE_DIR}/lib/CMSIS_6-6.3.0/CMSIS/Core/Include
+                ${CMAKE_CURRENT_SOURCE_DIR}/bootutil/inc
         )
-        # 选中核的宏（如 MINI_BOOT_M4=1），平台代码可据此选择核头/区分核
-        target_compile_definitions(platform
-        PUBLIC  MINI_BOOT_${MINI_BOOT_CORE_SELECTED}=1
-        )
+        # 核宏已由目录级 add_compile_definitions 统一注入，此处无需重复
         target_link_libraries(${CMAKE_PROJECT_NAME}
         PUBLIC platform
         )

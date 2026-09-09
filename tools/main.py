@@ -6,13 +6,14 @@
   python tools/main.py app.bin out.bin --check SHA                       # sha256 校验, aux=32B
   python tools/main.py app.bin out.bin --check GCM --key 00112233445566778899aabbccddeeff
   python tools/main.py app.bin out.bin --check CBC_SHA --key 00112233445566778899aabbccddeeff --mac_key ffeeddccbbaa99887766554433221100
-镜像布局(is_front=true):  crc(4B) | version | tag | aux | payload
-镜像布局(is_front=false): payload | aux | version | tag | crc(4B)
+镜像布局(is_front=true):  crc(4B) | version | tag | aux | payload | meta(4B)
+镜像布局(is_front=false): payload | aux | version | tag | crc(4B) | meta(4B)
+meta(4B, 恒在末尾): magic(0xA5) | mode|0x80(is_front) | version_len | tag_len, 镜像自描述
 payload: 原始bin 或 加密后的密文(加密时crc对密文计算)
 aux: GCM=nonce(12B)+tag(16B)  CBC=iv(16B)  CBC_SHA=iv(16B)+hmac(32B)  SHA=sha256(32B)  CRC=空
-CBC_SHA 的 hmac 覆盖 iv||ciphertext(与 algorithm.h 的 aes_cbc_hmac_encrypt 一致);
+CBC_SHA 的 hmac 覆盖 iv||ciphertext(设备端 read.c 的 CBC_SHA 分支用同样覆盖范围验 MAC);
   可用 --mac_key 指定独立 MAC 密钥(不给则复用 --key, 生产环境应保证两者独立)
-version/tag 为变长字符串, 设备端解析需约定长度
+version/tag 为变长字符串, 长度记录在 meta 中(各不超过 255 字节)
 CRC模型参数可用命令行调整(--crc_init/--crc_refin/--crc_refout/--crc_xor_out/--crc_poly),
 默认值: init=0xffffffff refin=refout=true xor_out=0xffffffff poly=0x04c11db7 (即标准CRC-32)
 """
@@ -42,6 +43,10 @@ class check_cripted(Enum):
     CBC_SHA = 3
     SHA = 4
     CRC = 5
+
+# 设备端 read.h 的 image_check_t 枚举值, meta 里存的是这套编号(与上面打包枚举数值无关)
+_MODE_CODE = {"CRC": 0, "SHA": 1, "GCM": 2, "CBC": 3, "CBC_SHA": 4}
+_META_MAGIC = 0xA5
 
 def make_image(
     bin_file:str,
@@ -78,6 +83,12 @@ def make_image(
     # 未单独指定 MAC 密钥时回退用加密密钥(生产环境应传 --mac_key 保证两者独立)
     mac_key = mac_key or key
 
+    version_bytes = version.encode()
+    tag_bytes = tag.encode()
+    if len(version_bytes) > 0xFF or len(tag_bytes) > 0xFF:
+        raise ValueError(f"version/tag 长度须各不超过 255 字节 "
+                         f"(现 version={len(version_bytes)}, tag={len(tag_bytes)})")
+
     if cripted == check_cripted.GCM:
         payload , nonce , gcm_tag = aes.ase_gcm_encrypt(fw, key)
         aux = nonce + gcm_tag
@@ -86,7 +97,7 @@ def make_image(
         aux = iv
     elif cripted == check_cripted.CBC_SHA:
         payload , iv = aes.aes_cbc_encrypt(fw, key)
-        # 覆盖范围: iv||ciphertext, 必须与 algorithm.h 的 aes_cbc_hmac_encrypt 一致
+        # 覆盖范围: iv||ciphertext, 必须与设备端 read.c 的 CBC_SHA 分支一致
         aux = iv + make_hmac_tag(mac_key, iv + payload, hashlib.sha256)
     elif cripted == check_cripted.SHA:
         payload = fw
@@ -100,16 +111,21 @@ def make_image(
     image = bytearray()
     if is_front:
         image += crc_value.to_bytes(4, "little")
-        image += version.encode()
-        image += tag.encode()
+        image += version_bytes
+        image += tag_bytes
         image += aux
         image += payload
     else:
         image += payload
         image += aux
-        image += version.encode()
-        image += tag.encode()
+        image += version_bytes
+        image += tag_bytes
         image += crc_value.to_bytes(4, "little")
+
+    # 末尾自描述 meta: 设备端 read.c 从最后 4B 读出模式与变长字段长度
+    image += bytes((_META_MAGIC,
+                    _MODE_CODE[cripted.name] | (0x80 if is_front else 0),
+                    len(version_bytes), len(tag_bytes)))
 
     #原子写入: 先写临时文件再替换, 防止中途失败留下残缺镜像
     tmp_path = image_path + ".tmp"

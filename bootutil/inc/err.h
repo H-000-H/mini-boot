@@ -2,7 +2,7 @@
  * @copyright SPDX-License-Identifier: Apache-2.0
  * @file: err.h
  * @brief: 全项目统一错误码（0 表示成功，负数为具体失败原因）TODO暂时这套吧现在错误码有点多了有时间统一一下
- * 用法: int rc = image_read(...); if (rc != ERR_OK) { log("%s", err_str(rc)); }
+ * 用法: int rc = image_read_payload(...); if (rc != ERR_OK) { log("%s", err_str(rc)); }
  */
 #ifndef ERR_H
 #define ERR_H
@@ -28,7 +28,7 @@ extern "C" {
 #define ERR_DECRYPT_FAILED  (-9)  /**< 解密失败（底层算法库返回错误） */
 #define ERR_HASH_FAILED     (-10) /**< 摘要/HMAC 计算失败（底层算法库返回错误） */
 #define ERR_PADDING         (-11) /**< PKCS#7 填充非法（CBC 去填充时校验） */
-
+#define ERR_OTA_OPEN     (-12) /**< OTA 未开启 */
 /**
  * @brief 错误码转可读字符串
  * @param err [in] 本文件定义的错误码

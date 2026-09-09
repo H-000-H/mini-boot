@@ -21,7 +21,6 @@ set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 add_executable(${CMAKE_PROJECT_NAME}
     main.cpp
-    ${ROOT}/bootutil/src/image.c
     ${ROOT}/bootutil/src/read.c
     ${ROOT}/bootutil/src/err.c
     ${ROOT}/algorithm/src/crc.c
