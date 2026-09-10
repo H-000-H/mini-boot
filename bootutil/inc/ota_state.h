@@ -40,18 +40,30 @@ extern "C"
 #define OTA_STATE_MAGIC_MASK      (0xFFu << OTA_STATE_MAGIC_SHIFT)
 #define OTA_STATE_MAGIC_VALUE     0xA5u
 
-/** 持久化位掩码：只有这些位跨复位保留；开关位属运行期配置（app 每次启动自行设置) */
-#define OTA_STATE_DURABLE_MASK    (OTA_STATE_FAIL_MASK | \
-                                   (1u << OTA_STATE_BIT_CURRENT) | \
-                                   (1u << OTA_STATE_BIT_PENDING))
+/* 单 bit 掩码：做"读-改-写"时写名字，避免代码里到处写 1u << bit */
+#define OTA_STATE_MASK_OPEN       (1u << OTA_STATE_BIT_OPEN)
+#define OTA_STATE_MASK_ROLLBACK   (1u << OTA_STATE_BIT_ROLLBACK)
+#define OTA_STATE_MASK_FORCE      (1u << OTA_STATE_BIT_FORCE)
+#define OTA_STATE_MASK_CURRENT    (1u << OTA_STATE_BIT_CURRENT)
+#define OTA_STATE_MASK_PENDING    (1u << OTA_STATE_BIT_PENDING)
+
+/* 当前分区取值（bit6 解码后的值，不是掩码） */
+#define OTA_STATE_PARTITION_IMAGE_0   0u
+#define OTA_STATE_PARTITION_IMAGE_1   1u
+
+/* 低 8 位 = 原 ota_status 字节（bit0~bit7） */
+#define OTA_STATE_MASK_STATUS_BYTE    0xFFu
+
+/** 持久化位掩码：只有这些位跨复位保留；开关位属运行期配置（app 每次启动自行设置） */
+#define OTA_STATE_DURABLE_MASK    (OTA_STATE_FAIL_MASK | OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING)
 
 #if !defined(__cplusplus) && !defined(_MSC_VER)
 /* 位域不自相重叠：掩码写错在编译期就报，不留到烧进去才发现 */
-_Static_assert((OTA_STATE_FAIL_MASK & (1u << OTA_STATE_BIT_CURRENT)) == 0u,
+_Static_assert((OTA_STATE_FAIL_MASK & OTA_STATE_MASK_CURRENT) == 0u,
                "ota_state: fail code field overlaps current-partition bit");
 _Static_assert((OTA_STATE_MAGIC_MASK & (OTA_STATE_FAIL_MASK |
-                                        (1u << OTA_STATE_BIT_CURRENT) |
-                                        (1u << OTA_STATE_BIT_PENDING))) == 0u,
+                                        OTA_STATE_MASK_CURRENT |
+                                        OTA_STATE_MASK_PENDING)) == 0u,
                "ota_state: magic field overlaps other fields");
 _Static_assert((OTA_STATE_DURABLE_MASK & OTA_STATE_MAGIC_MASK) == 0u,
                "ota_state: durable bits must not include magic");
@@ -78,10 +90,28 @@ static inline uint32_t ota_state_fail_get(uint32_t word)
     return (word & OTA_STATE_FAIL_MASK) >> OTA_STATE_FAIL_SHIFT;
 }
 
+/** @brief 把失败码编码进状态字对应位域（超出按低 2 位截断） */
+static inline uint32_t ota_state_fail_encode(uint32_t code)
+{
+    return (code << OTA_STATE_FAIL_SHIFT) & OTA_STATE_FAIL_MASK;
+}
+
 /** @brief 写失败码（超出按低 2 位截断，返回新状态字） */
 static inline uint32_t ota_state_fail_put(uint32_t word, uint32_t code)
 {
-    return (word & ~OTA_STATE_FAIL_MASK) | ((code & 0x3u) << OTA_STATE_FAIL_SHIFT);
+    return (word & ~OTA_STATE_FAIL_MASK) | ota_state_fail_encode(code);
+}
+
+/** @brief 读当前分区（0=image_0 1=image_1） */
+static inline uint32_t ota_state_partition_get(uint32_t word)
+{
+    return ota_state_bit_get(word, OTA_STATE_BIT_CURRENT);
+}
+
+/** @brief 读待确认标志（1=待 app 确认） */
+static inline uint32_t ota_state_pending_get(uint32_t word)
+{
+    return ota_state_bit_get(word, OTA_STATE_BIT_PENDING);
 }
 
 /* ---------------- 记录完整性（核心与各后端共用） ---------------- */
@@ -128,6 +158,16 @@ int ota_state_load(uint32_t *state_word);
 
 /** @brief 持久化状态字（内部补魔数与校验字） */
 int ota_state_store(uint32_t state_word);
+
+/**
+ * @brief 读-改-写持久状态：只改 mask 指定的持久位，其余位从介质读回保留
+ * @param mask  要修改的位（OTA_STATE_DURABLE_MASK 的子集）
+ * @param value 这些位的新值
+ * @return ERR_OK；未注册后端返回 ERR_NOT_SUPPORTED
+ * @note  给 boot/app 各自镜像安全落盘用：调用方**不必先 ota_state_load()**，
+ *        避免"未加载的 RAM 副本整字回写"把其它持久位（如当前分区）冲掉
+ */
+int ota_state_update(uint32_t mask, uint32_t value);
 
 /* ---------------- 内置后端 ---------------- */
 /** @brief 注册内置的 flash 状态扇区后端（追加日志，区域 id = FLASH_AREA_ID_STATE） */

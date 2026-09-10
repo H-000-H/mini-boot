@@ -12,7 +12,7 @@ static const ota_state_ops_t *s_state_ops = NULL;
 
 uint32_t ota_state_crc32(uint32_t state_word)
 {
-    /* 固定模型即可：状态字只有 4 字节，模型与服务端无关，只要求同一版本内一致 */
+    /* 格式写死了如果要换随便换一下就行就是状态字的crc值而已想用什么都无所谓 */
     crc_stream_t stream;
     uint8_t bytes[4];
 
@@ -28,8 +28,7 @@ uint32_t ota_state_crc32(uint32_t state_word)
 
 static uint32_t ota_state_with_magic(uint32_t state_word)
 {
-    return (state_word & ~OTA_STATE_MAGIC_MASK) |
-           ((OTA_STATE_MAGIC_VALUE << OTA_STATE_MAGIC_SHIFT) & OTA_STATE_MAGIC_MASK);
+    return (state_word & ~OTA_STATE_MAGIC_MASK) |((OTA_STATE_MAGIC_VALUE << OTA_STATE_MAGIC_SHIFT) & OTA_STATE_MAGIC_MASK);
 }
 
 void ota_state_record_build(uint32_t record[OTA_STATE_RECORD_WORDS], uint32_t state_word)
@@ -42,8 +41,7 @@ void ota_state_record_build(uint32_t record[OTA_STATE_RECORD_WORDS], uint32_t st
 
 int ota_state_record_valid(const uint32_t record[OTA_STATE_RECORD_WORDS])
 {
-    if ((record[0] & OTA_STATE_MAGIC_MASK) !=
-        ((OTA_STATE_MAGIC_VALUE << OTA_STATE_MAGIC_SHIFT) & OTA_STATE_MAGIC_MASK))
+    if ((record[0] & OTA_STATE_MAGIC_MASK) !=((OTA_STATE_MAGIC_VALUE << OTA_STATE_MAGIC_SHIFT) & OTA_STATE_MAGIC_MASK))
     {
         return 0;
     }
@@ -58,14 +56,15 @@ int ota_state_resolve_pending(uint32_t *state, uint32_t fail_code)
     {
         return 0;
     }
-    if (ota_state_bit_get(*state, OTA_STATE_BIT_PENDING) == 0u)
+    if (ota_state_pending_get(*state) == 0u)
     {
         return 0;
     }
 
     /* 只有两个镜像区，回滚目标就是另一个分区，无需额外保存 old_partition */
-    current = ota_state_bit_get(*state, OTA_STATE_BIT_CURRENT);
-    *state = ota_state_bit_put(*state, OTA_STATE_BIT_CURRENT, (current != 0u) ? 0u : 1u);
+    current = ota_state_partition_get(*state);
+    *state = ota_state_bit_put(*state, OTA_STATE_BIT_CURRENT,
+                               (current == OTA_STATE_PARTITION_IMAGE_1)? OTA_STATE_PARTITION_IMAGE_0: OTA_STATE_PARTITION_IMAGE_1);
     *state = ota_state_bit_put(*state, OTA_STATE_BIT_PENDING, 0u);
     *state = ota_state_fail_put(*state, fail_code);
     return 1;
@@ -120,4 +119,19 @@ int ota_state_store(uint32_t state_word)
 
     ota_state_record_build(record, state_word);
     return s_state_ops->store(record);
+}
+
+int ota_state_update(uint32_t mask, uint32_t value)
+{
+    uint32_t cur = 0u;
+
+    if (s_state_ops == NULL)
+    {
+        return ERR_NOT_SUPPORTED;
+    }
+    if (ota_state_load(&cur) != ERR_OK)
+    {
+        cur = 0u; /* 无有效记录：以 0 为底，只写入本次指定的位 */
+    }
+    return ota_state_store(((cur & ~mask) | (value & mask)) & OTA_STATE_DURABLE_MASK);
 }

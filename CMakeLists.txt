@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(CMAKE_PROJECT_NAME mini_boot)
+set(CMAKE_PROJECT_NAME mini_ota)
 
 #clangd要吃长路径
 set(MINI_BOOT_GCC_JUNCTION "${CMAKE_CURRENT_SOURCE_DIR}/.arm-gcc/bin/arm-none-eabi-gcc.exe")

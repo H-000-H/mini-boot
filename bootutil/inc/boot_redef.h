@@ -16,6 +16,14 @@ extern "C" {
 #include <stddef.h> /* offsetof：用于向量表布局静态断言 */
 #include "boot_config.h"
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MINI_BOOT_NORETURN __attribute__((noreturn))
+#elif defined(_MSC_VER)
+#define MINI_BOOT_NORETURN __declspec(noreturn)
+#else
+#define MINI_BOOT_NORETURN
+#endif
+
 /*-------------------------------------------------------------------------------------------------------*/
 /*------------------------- 体系结构层接口（实现：arch/arm/cortex-m/cortex_m.S）-------------------------*/
 /*-------------------------------------------------------------------------------------------------------*/
@@ -58,7 +66,7 @@ int mini_boot_set_vtor(uint32_t vtor_addr);
  * @param msp:   app 的初始栈顶（向量表第 0 个字）
  * @param entry: app 的复位入口（向量表第 1 个字，Thumb 位为 1）
  */
-__attribute__((noreturn)) void mini_boot_jump_to_app(uint32_t msp, uint32_t entry);
+MINI_BOOT_NORETURN void mini_boot_jump_to_app(uint32_t msp, uint32_t entry);
 
 /*-------------------------------------------------------------------------------------------------------*/
 /*-------------------------------------------------寄存器定义区-------------------------------------------*/
@@ -107,7 +115,7 @@ typedef struct
 /** @brief: 取指定地址处的向量表；调用方需保证地址 128 字节对齐且镜像已校验 */
 #define MINI_BOOT_VECTOR_TABLE(addr) ((const mini_boot_vector_t *)(uintptr_t)(addr))
 
-#if !defined(__cplusplus)
+#if !defined(__cplusplus) && !defined(_MSC_VER)
 _Static_assert(offsetof(mini_boot_vector_t, reset_handler) == 4U,
                "mini_boot_vector_t 布局必须匹配 ARM 向量表：+0 MSP,+4 复位入口");
 #endif

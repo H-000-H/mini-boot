@@ -6,7 +6,7 @@
  * @note  状态变量本体是 start.c 内的 static（对外彻底隐藏），
  *        外部只能通过本文件声明的函数读写，不要尝试 extern 它。
  *  boot:   flash ──load()──► s_ota_state（只回填持久位，开关位留给 app 设置）
- *  运行:   s_ota_state ──state_sync()──► flash（只在 pending/分区/失败码变化时）
+ *  运行:   s_ota_state ──state_update()──► flash（只改指定的持久位，其余位读回保留）
  */
 #ifndef BOOTUTIL_INC_START_H
 #define BOOTUTIL_INC_START_H
@@ -33,6 +33,7 @@ extern "C"
 #define OTA_FAIL_VERIFY 3U /* 校验失败 */
 
 /* ---- 设置 ---- */
+/* 开关位（open/rollback/force）只改 RAM，不落盘；app 每次启动自行设置 */
 void ota_open(void);             /* bit0 置 1：开启 OTA */
 void ota_close(void);            /* bit0 清 0：关闭 OTA */
 void ota_rollback_open(void);    /* bit2 置 1：开启回滚 */
@@ -41,7 +42,12 @@ void ota_rollback_close(void);   /* bit2 清 0：关闭回滚 */
 void ota_force_open(void);       /* bit3 置 1：强制 OTA（仅 DEBUG 编译有效） */
 void ota_force_close(void);      /* bit3 清 0 */
 #endif
-void ota_fail_set(uint8_t code); /* bit4~5 写入失败码（OTA_FAIL_xxx，超出按低 2 位截断） */
+
+/* 以下均属持久位：改动即落盘（读-改-写，只动自己那几位）；
+ * 返回 ERR_NOT_SUPPORTED 表示状态后端未注册 —— 即“没写下去” */
+int ota_set_partition_image_0(void); /* bit6 写当前分区=image_0 */
+int ota_set_partition_image_1(void); /* bit6 写当前分区=image_1 */
+int ota_fail_set(uint8_t code);      /* bit4~5 写失败码（OTA_FAIL_xxx，超出按低 2 位截断） */
 
 /* ---- 读取 ---- */
 uint8_t mini_boot_get_ota_status(void); /* 整个状态字节 */
@@ -88,19 +94,35 @@ int mini_boot_start_ota(void);
 /**
  * @brief 启动时恢复持久状态（boot 选区前调用一次）
  * @note  若上次激活的新镜像未被 app 确认（pending），内部回滚到另一分区并记录失败码
- * @return ERR_OK（无有效状态时以默认值继续）
+ * @return ERR_OK 已恢复（首次上电无记录也返回 ERR_OK，走默认值）；
+ *         后端未注册时返回 ERR_NOT_SUPPORTED（说明状态区没接上，需平台先注册后端）
  */
 int mini_boot_state_load(void);
 
 /**
- * @brief 新镜像运行确认（app 侧运行正常后调用）：清 pending，不再回滚
+ * @brief app 侧读状态前调用：只把持久位从介质刷进 RAM，**不做回滚判定**
+ * @return ERR_OK（含首次上电无记录）；后端未注册返回 ERR_NOT_SUPPORTED
+ * @note  回滚判定只在 mini_boot_state_load() 里做；app 不要拿它当"读当前状态"的替代
  */
-void mini_boot_confirm_ota(void);
+int mini_boot_state_refresh(void);
 
-int mini_boot_pause_ota(void);
-#if defined (DEBUG)
-int mini_boot_start_ota_force(void);
-#endif
+/**
+ * @brief 备用分区可用性检查（回滚前调用）：返回非 0 = 备用可用（执行回滚）；0 = 不可用（放弃回滚）
+ * @param backup_partition 将要回滚到的分区（0=image_0 1=image_1）
+ * @note  由平台实现：只有平台知道分区基址与镜像长度，能真正做向量表/整包 CRC 校验；
+ *        未注册时回滚前不做检查（保持旧行为）
+ */
+typedef int (*ota_backup_check_fn)(uint32_t backup_partition);
+
+/** @brief 注册备用分区检查回调（可选） */
+int ota_set_backup_check(ota_backup_check_fn fn);
+
+/**
+ * @brief 新镜像运行确认（app 侧运行正常后调用）：清 pending，不再回滚
+ * @return ERR_OK 已落盘；ERR_NOT_SUPPORTED 后端未注册（什么都没写，需平台先注册后端）
+ * @note  只改 pending（读-改-写），不会动当前分区/失败码
+ */
+int mini_boot_confirm_ota(void);
 #if defined(__cplusplus)
 }
 #endif

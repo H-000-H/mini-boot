@@ -8,27 +8,37 @@
  *        其中需要跨复位保留的位由 ota_state 状态区承载（位定义见 ota_state.h）
  */
 #include "start.h"
+#include "boot_redef.h"
 #include "flash.h"
 #include "err.h"
-#include "sys/_intsup.h"
 #include <stdint.h>
 #include <stddef.h>
 #include "boot_config.h"
-#include "memory.h"
 #include "read.h"
 #include "boot_keys.h"
 #include "ota_state.h"
 
-/* OTA 运行时状态字（位定义见 ota_state.h */
+/* OTA 运行时状态字（位定义见 ota_state.h） */
 static volatile uint32_t s_ota_state = 0u;
+static ota_backup_check_fn s_backup_check = NULL; /* 可选：回滚前检查备用分区 */
 static uint8_t load_buffer[MINI_BOOT_LOAD_MAX];/*默认走固定静态数组的如果内存想要优化可以放进栈里面但是栈小容易出问题固此处不放栈*/
 static uint8_t verify_scratch[MINI_BOOT_LOAD_MAX]; /* 校验分块读取临时缓冲 */
 static uint32_t s_downloaded_size = 0U; /* 最近一次成功下载的镜像总长度，0 表示尚无有效下载 */
 
-/* 只把需要跨复位保留的位同步到持久状态区；后端未注册时静默失败（早期启动阶段） */
-static void state_sync(void)
+/* 落盘：只改 mask 指定的持久位，其余位由 ota_state_update 从介质读回保留。
+ * boot 与 app 是两份镜像、各有一份 s_ota_state：app 那份没加载过（为 0），
+ * 若整字回写会把 current/fail_code 冲掉，所以一律走"读-改-写 + 掩码限定"。
+ * 后端未注册 / 无有效记录时静默失败（早期启动阶段）。 */
+static int state_update(uint32_t mask, uint32_t value)
 {
-    (void)ota_state_store(s_ota_state & OTA_STATE_DURABLE_MASK);
+    s_ota_state = (s_ota_state & ~mask) | (value & mask);
+    return ota_state_update(mask, value);
+}
+
+/* 单 bit 落盘：value 非 0 置位、否则清位（mask 只含一个 bit） */
+static int state_update_bit(uint32_t mask, uint32_t value)
+{
+    return state_update(mask, (value != 0u) ? mask : 0u);
 }
 /* ---------------- 设置 ---------------- */
 /* 开关位属运行期配置（app 每次启动自行设置），只改 RAM，不落盘 */
@@ -52,17 +62,15 @@ void ota_rollback_close(void)
     s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_ROLLBACK, 0u);
 }
 
-/* 分区属持久位：boot 复位后要据此跳转，改动即落盘 */
-void ota_set_partition_image_0(void)
+/* 分区属持久位：boot 复位后要据此跳转，所以直接触发写state扇区 */
+int ota_set_partition_image_0(void)
 {
-    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, 0u);
-    state_sync();
+    return state_update_bit(OTA_STATE_MASK_CURRENT, OTA_STATE_PARTITION_IMAGE_0);
 }
 
-void ota_set_partition_image_1(void)
+int ota_set_partition_image_1(void)
 {
-    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, 1u);
-    state_sync();
+    return state_update_bit(OTA_STATE_MASK_CURRENT, OTA_STATE_PARTITION_IMAGE_1);
 }
 #if defined (DEBUG)
 void ota_force_open(void)
@@ -76,17 +84,16 @@ void ota_force_close(void)
 }
 #endif
 
-/* 失败码属持久位：要能跨复位被上层读到，改动即落盘 */
-void ota_fail_set(uint8_t code)
+/* 失败码属持久位：要能跨复位被上层读到  */
+int ota_fail_set(uint8_t code)
 {
-    s_ota_state = ota_state_fail_put(s_ota_state, code);
-    state_sync();
+    return state_update(OTA_STATE_FAIL_MASK, ota_state_fail_encode((uint32_t)code));
 }
 
 /* ---------------- 读取 ---------------- */
 uint8_t mini_boot_get_ota_status(void)
 {
-    return (uint8_t)(s_ota_state & 0xFFu);
+    return (uint8_t)(s_ota_state & OTA_STATE_MASK_STATUS_BYTE);
 }
 
 uint8_t ota_is_open(void)
@@ -127,36 +134,87 @@ uint8_t ota_is_pending(void)
     return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_PENDING);
 }
 
+/* 从介质把持久位刷到 RAM（不做回滚判定）。
+ * 返回 ERR_OK（含"无记录"，此时清持久位走默认）或后端错误（如 ERR_NOT_SUPPORTED）。 */
+static int state_reload(void)
+{
+    uint32_t loaded = 0u;
+    int rc = ota_state_load(&loaded);
+
+    if (rc == ERR_OK)
+    {
+        /* 只恢复持久位；开关位是运行期配置，不被持久值覆盖 */
+        s_ota_state = (s_ota_state & ~OTA_STATE_DURABLE_MASK) |
+                      (loaded & OTA_STATE_DURABLE_MASK);
+        return ERR_OK;
+    }
+    if (rc == ERR_OTA_STATE)
+    {
+        s_ota_state &= ~OTA_STATE_DURABLE_MASK; /* 首次上电/无有效记录：走默认，正常 */
+        return ERR_OK;
+    }
+    return rc; /* 后端未注册（ERR_NOT_SUPPORTED）等 */
+}
+
+int ota_set_backup_check(ota_backup_check_fn fn)
+{
+    s_backup_check = fn;
+    return ERR_OK;
+}
+
 /* ---------------- 启动恢复 ----------------
  * boot 选区前调用一次：恢复持久位；若上次激活的新镜像 app 未确认（pending），
  * 则回滚到另一个分区并记录失败码。首次上电/无有效记录时走默认值。
  */
 int mini_boot_state_load(void)
 {
-    uint32_t loaded = 0u;
+    int rc = state_reload();
 
-    if (ota_state_load(&loaded) == ERR_OK)
+    if (rc != ERR_OK)
     {
-        /* 只恢复持久位；开关位是运行期配置，不被持久值覆盖 */
-        s_ota_state = (s_ota_state & ~OTA_STATE_DURABLE_MASK) |
-                      (loaded & OTA_STATE_DURABLE_MASK);
-    }
-    else
-    {
-        s_ota_state &= ~OTA_STATE_DURABLE_MASK; /* 无有效状态：清持久位走默认 */
+        return rc;
     }
 
-    if (ota_state_bit_get(s_ota_state, OTA_STATE_BIT_PENDING) != 0u)
+    if (ota_is_pending() != 0u)
     {
-        /* pending 置位说明上次激活的新镜像没被 app 确认：回滚到另一分区并落盘 */
-        uint32_t resolved = s_ota_state;
-        if (ota_state_resolve_pending(&resolved, OTA_FAIL_VERIFY) != 0)
+        /* pending：上次激活的新镜像没被 app 确认，本该回滚；但先问一句备用能不能用 ——
+         * 备用也坏的话，"回滚"只会跳进一个更坏的镜像。 */
+        uint32_t backup_partition =
+            (ota_state_partition_get(s_ota_state) == OTA_STATE_PARTITION_IMAGE_1)
+                ? OTA_STATE_PARTITION_IMAGE_0
+                : OTA_STATE_PARTITION_IMAGE_1;
+        int backup_ok = 1;
+
+        if (s_backup_check != NULL)
         {
-            s_ota_state = resolved;
-            state_sync();
+            backup_ok = s_backup_check(backup_partition);
+        }
+
+        if (backup_ok != 0)
+        {
+            /* 备用可用：回滚到它（翻转 current + 清 pending + 记失败码），一次落盘 */
+            uint32_t resolved = s_ota_state;
+            if (ota_state_resolve_pending(&resolved, OTA_FAIL_VERIFY) != 0)
+            {
+                uint32_t mask = OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK;
+                (void)state_update(mask, resolved & mask);
+            }
+        }
+        else
+        {
+            /* 备用不可用：放弃回滚，保留当前镜像（它是校验通过的）；清 pending 防止每次
+             * 上电反复判定，并记失败码供上层识别 */
+            (void)state_update(OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK,
+                               ota_state_fail_encode(OTA_FAIL_VERIFY));
         }
     }
     return ERR_OK;
+}
+
+/* app 侧读状态前调用：只刷新持久位到 RAM，不做回滚判定（回滚是 boot 的事） */
+int mini_boot_state_refresh(void)
+{
+    return state_reload();
 }
 
 /* ---------------- flash 区域选择 ----------------
@@ -166,8 +224,9 @@ int mini_boot_state_load(void)
  */
 static uint32_t flash_active_area_id(void)
 {
-    return (ota_current_partition_get() != 0U) ? (uint32_t)FLASH_AREA_ID_IMAGE_1
-                                               : (uint32_t)FLASH_AREA_ID_IMAGE_0;
+    return (ota_current_partition_get() == OTA_STATE_PARTITION_IMAGE_1)
+               ? (uint32_t)FLASH_AREA_ID_IMAGE_1
+               : (uint32_t)FLASH_AREA_ID_IMAGE_0;
 }
 
 static uint32_t flash_inactive_area_id(void)
@@ -176,7 +235,9 @@ static uint32_t flash_inactive_area_id(void)
     {
         return (uint32_t)FLASH_AREA_ID_IMAGE_0;
     }
-    return (ota_current_partition_get() != 0U) ? (uint32_t)FLASH_AREA_ID_IMAGE_0: (uint32_t)FLASH_AREA_ID_IMAGE_1;
+    return (ota_current_partition_get() == OTA_STATE_PARTITION_IMAGE_1)
+               ? (uint32_t)FLASH_AREA_ID_IMAGE_0
+               : (uint32_t)FLASH_AREA_ID_IMAGE_1;
 }
 
 /* ---------------- OTA 主流程 ---------------- */
@@ -293,32 +354,30 @@ int mini_boot_start_ota(void)
         return rc;
     }
 
-    /* 校验通过：激活新分区（bit6 切到刚下载的分区），一次性落盘 */
-    uint32_t current = (flash_inactive_area_id() == (uint32_t)FLASH_AREA_ID_IMAGE_1) ? 1u : 0u;
-    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, current);
+    /* 校验通过：激活新分区（bit6 切到刚下载的分区）+ 按需置 pending，一次落盘；
+     * 同时清掉上次的失败码（它描述的是上一次 OTA 的结果，这次已成功翻篇） */
+    uint32_t mask = OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK;
+    uint32_t value = 0u;
+    if (flash_inactive_area_id() == (uint32_t)FLASH_AREA_ID_IMAGE_1)
+    {
+        value |= OTA_STATE_MASK_CURRENT;
+    }
     /* 双分区 + 回滚开启时才需要待确认：单分区没有可回退的旧镜像 */
-    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_PENDING,(ota_is_double() && ota_is_rollback()) ? 1u : 0u);
-    state_sync();
+    if (ota_is_double() && ota_is_rollback())
+    {
+        value |= OTA_STATE_MASK_PENDING;
+    }
+    int rc_state = state_update(mask, value);
+    if (ota_is_double() && (rc_state != ERR_OK))
+    {
+        return rc_state;
+    }
     return ERR_OK;
 }
 
-void mini_boot_confirm_ota(void)
+int mini_boot_confirm_ota(void)
 {
-    /* app 运行正常：清 pending，下次复位不再回滚 */
-    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_PENDING, 0u);
-    state_sync();
+    /* app 运行正常：只清 pending。
+     * 后端未注册时返回 ERR_NOT_SUPPORTED，让"confirm 其实没落盘"当场暴露。 */
+    return state_update_bit(OTA_STATE_MASK_PENDING, 0u);
 }
-
-int mini_boot_pause_ota(void)
-{
-    // TODO: Implement pause OTA logic
-    return 0;
-}
-
-#if defined (DEBUG)
-int mini_boot_start_ota_force(void)
-{
-    // TODO: Implement force start OTA logic
-    return 0;
-}
-#endif

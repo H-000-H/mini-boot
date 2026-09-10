@@ -7,6 +7,10 @@
 #ifndef CRC_H
 #define CRC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -48,5 +52,9 @@ void crc_stream_feed(crc_stream_t *s, const uint8_t *data, size_t length);
  * @return 最终 CRC 值；状态无效（width 非法）时返回 0
  */
 uint32_t crc_stream_finish(crc_stream_t *s);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CRC_H */

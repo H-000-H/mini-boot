@@ -2,8 +2,9 @@
  * @copyright SPDX-License-Identifier: Apache-2.0
  * @author: H-000-H
  * @file: flash.h
- * @brief: flash 操作接口的分发层：平台通过 flash_ops_register 注册 open/erase/write/read 实现，
- *         未注册时所有接口返回 ERR_NOT_SUPPORTED。不依赖弱符号（GCC 扩展），PC 端测试可直接注册 mock
+ * @brief: flash 操作接口的分发层：平台通过 flash_ops_register 注册 open/erase/write/read 实现
+ *         （+ 可选的 get_sectors），未注册时所有接口返回 ERR_NOT_SUPPORTED。
+ *         不依赖弱符号（GCC 扩展），PC 端测试可直接注册 mock
  */
 #ifndef BOOTUTIL_INC_FLASH_H
 #define BOOTUTIL_INC_FLASH_H
@@ -41,7 +42,7 @@ struct flash_area
 };
 
 /**
- * @brief: flash 移植操作表，平台填充四个实现后通过 flash_ops_register 注册
+ * @brief: flash 移植操作表：open/erase/write/read 必填，get_sectors 可选
  */
 typedef struct flash_ops
 {
@@ -49,12 +50,14 @@ typedef struct flash_ops
     int (*erase)(const flash_area_t *area, uint32_t off, uint32_t len);                  /**< 擦除（覆盖到的扇区全擦，向上取整） */
     int (*write)(const flash_area_t *area, uint32_t off, const void *buf, uint32_t len); /**< 写入 */
     int (*read)(const flash_area_t *area, uint32_t off, void *buf, uint32_t len);        /**< 读取 */
+    int (*get_sectors)(const flash_area_t *area, uint32_t max_count,
+                       flash_sector_t *sectors, uint32_t *count);                        /**< 可选：扇区清单（未实现时该接口返回 ERR_NOT_SUPPORTED） */
 } flash_ops_t;
 
 /**
  * @brief: 注册平台 flash 操作表（启动阶段调用一次；ops 指针与成员运行期须保持有效）
- * @param ops: 平台实现的操作表
- * @return: 0 表示成功，负数为失败原因（见 err.h）；ops 或任一成员为 NULL 返回 ERR_ARG
+ * @param ops: 平台实现的操作表（open/erase/write/read 必填；get_sectors 可为 NULL）
+ * @return: 0 表示成功，负数为失败原因（见 err.h）；ops 或必填成员为 NULL 返回 ERR_ARG
  */
 int flash_ops_register(const flash_ops_t *ops);
 
@@ -101,9 +104,10 @@ int flash_area_read_operation(const flash_area_t *area, uint32_t off, void *buf,
  * @param max_count[in]: 输入参数，sectors 数组容量
  * @param sectors[out]: 输出参数，扇区信息数组
  * @param count[out]: 输出参数，实际扇区数量
- * @return: 0 表示成功，负数为失败原因（见 err.h）
+ * @return: 0 表示成功；平台未实现 get_sectors 时返回 ERR_NOT_SUPPORTED（可选能力）
  */
-int flash_area_get_sectors(const flash_area_t *area,uint32_t max_count,flash_sector_t *sectors,uint32_t *count);       
+int flash_area_get_sectors(const flash_area_t *area, uint32_t max_count,
+                           flash_sector_t *sectors, uint32_t *count);
 
 #if defined(__cplusplus)
 }
