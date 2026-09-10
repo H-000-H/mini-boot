@@ -74,7 +74,7 @@ endif()
 
 # OTA 持久化状态模块的 PC 端单元测试（含 flash 状态扇区后端 + NOR 保真 mock）
 add_executable(state_test
-    state_test.c
+    state_test.cpp
     ${ROOT}/bootutil/src/ota_state.c
     ${ROOT}/bootutil/src/ota_state_flash.c
     ${ROOT}/bootutil/src/flash.c
@@ -85,4 +85,27 @@ add_executable(state_test
 target_include_directories(state_test PRIVATE
     ${ROOT}/bootutil/inc
     ${ROOT}/algorithm/inc
+)
+
+# OTA 全流程模拟测试（boot/下载/激活/确认/回滚），跑真实 start.c 代码路径
+add_executable(ota_flow_test
+    ota_flow_test.cpp
+    ${ROOT}/bootutil/src/start.c
+    ${ROOT}/bootutil/src/read.c
+    ${ROOT}/bootutil/src/flash.c
+    ${ROOT}/bootutil/src/ota_state.c
+    ${ROOT}/bootutil/src/ota_state_flash.c
+    ${ROOT}/bootutil/src/boot_keys.c
+    ${ROOT}/bootutil/src/err.c
+    ${ROOT}/algorithm/src/crc.c
+)
+
+target_include_directories(ota_flow_test PRIVATE
+    ${ROOT}/bootutil/inc
+    ${ROOT}/algorithm/inc
+)
+
+target_compile_definitions(ota_flow_test PRIVATE
+    IMAGE_CRYPTO_ENABLE=0        # 纯 CRC 模式，免编 mbedtls
+    CONFIG_OTA_DUAL_PARTITION=1  # 双分区（回滚机制需要）
 )
