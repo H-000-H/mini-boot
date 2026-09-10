@@ -11,6 +11,12 @@ set(CMAKE_PROJECT_NAME pc_check)
 
 project(pc_check C CXX)
 
+# 板级布局参数：boot_config.h 不再提供默认值，主机测试用一组 stub 值
+add_compile_definitions(
+    CONFIG_SRAM_START_ADDR=0x20000000
+    CONFIG_SRAM_SIZE=0x00020000
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -65,3 +71,18 @@ if(TOOL_ENABLE_CRYPTO)
 
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE mbedcrypto)
 endif()
+
+# OTA 持久化状态模块的 PC 端单元测试（含 flash 状态扇区后端 + NOR 保真 mock）
+add_executable(state_test
+    state_test.c
+    ${ROOT}/bootutil/src/ota_state.c
+    ${ROOT}/bootutil/src/ota_state_flash.c
+    ${ROOT}/bootutil/src/flash.c
+    ${ROOT}/bootutil/src/err.c
+    ${ROOT}/algorithm/src/crc.c
+)
+
+target_include_directories(state_test PRIVATE
+    ${ROOT}/bootutil/inc
+    ${ROOT}/algorithm/inc
+)

@@ -21,59 +21,43 @@
 #endif
 
 /* SRAM 区间：用于校验 app 向量表里的初始栈顶是否落在合法 RAM（跳转前的关键校验）
+ * 板级布局参数，**不提供默认值**：给错默认会导致"编译通过但 boot 误判 app SP"，
+ * 比编译失败难查得多。请由外部配置头（config.h / mini_boot_config.h）或 CMake 的
+ * CONFIG_SRAM_* 注入提供。
  * STM32F407: SRAM 从 0x20000000 起，共 128KB(112K+16K) => 末尾 0x20020000
- * 换芯片时按数据手册改这两个值（CONFIG_SRAM_START_ADDR / CONFIG_SRAM_SIZE 可外部覆盖） */
+ */
 #if defined(CONFIG_SRAM_START_ADDR)
 #define SRAM_START_ADDR CONFIG_SRAM_START_ADDR
 #elif defined(SRAM_START_ADDR)
 #else
-#define SRAM_START_ADDR 0x20000000U
+#error "SRAM_START_ADDR 未定义：请提供板级 RAM 起始地址（外部配置头或 -DCONFIG_SRAM_START_ADDR）"
 #endif
 
 #if defined(CONFIG_SRAM_SIZE)
 #define SRAM_SIZE        CONFIG_SRAM_SIZE
 #elif defined(SRAM_SIZE)
 #else
-#define SRAM_SIZE        0x00020000U /* 128KB */
+#error "SRAM_SIZE 未定义：请提供板级 RAM 大小（外部配置头或 -DCONFIG_SRAM_SIZE）"
 #endif
 
 #define SRAM_END_ADDR    (SRAM_START_ADDR + SRAM_SIZE)
 
-/* ---------- app 分区布局 ----------
- * 单一数据源：地址/长度只在 CMake 里定义一次（FLASH_APP_START 等 cache 变量），
- * 同时喂给链接脚本（configure_file 生成 .ld）和本文件（-DCONFIG_XXX=...）。
- * 不要在别处再手写一份地址，否则链接地址与跳转地址会不一致（必炸且难查）。
+/* app 分区的地址/长度不在这里：分区布局属于板级工程（flash_area 表 / 厂商链接脚本），
+ * boot 跳转用的 app 区域由平台通过 mini_boot_app_area_t 传入（见 boot.h）。
  */
-#if defined(CONFIG_FLASH_APP_START)
-#define FLASH_APP_START     CONFIG_FLASH_APP_START
-#elif defined(FLASH_APP_START)
-#else
-#define FLASH_APP_START     0x08080000U
-#endif
 
-#if defined(CONFIG_FLASH_APP_LENGTH)
-#define FLASH_APP_LENGTH    CONFIG_FLASH_APP_LENGTH
-#elif defined(FLASH_APP_LENGTH)
+/* ---------- OTA 能力开关（静态能力，构建期定死） ----------
+ * 双分区（image_0/image_1）是 flash 布局能力，运行期不可能改变：统一由本宏决定，
+ * 上层只读（ota_is_double()），不要再引入对应的运行期开关位（避免一个概念两个来源）。
+ * 推荐在外部配置文件（config.h / mini_boot_config.h）里定义，或 -DOTA_DUAL_PARTITION=1；
+ * 纯功能开关不要堆进 CMake：构建脚本会变重，且容易与配置头不一致。
+ */
+#if defined(CONFIG_OTA_DUAL_PARTITION)
+#define OTA_DUAL_PARTITION  CONFIG_OTA_DUAL_PARTITION
+#elif defined(OTA_DUAL_PARTITION)
 #else
-#define FLASH_APP_LENGTH    0x00010000U
+#define OTA_DUAL_PARTITION  0
 #endif
-
-#if defined(CONFIG_RAM_APP_START)
-#define RAM_APP_START       CONFIG_RAM_APP_START
-#elif defined(RAM_APP_START)
-#else
-#define RAM_APP_START       0x20000000U
-#endif
-
-#if defined(CONFIG_RAM_APP_LENGTH)
-#define RAM_APP_LENGTH      CONFIG_RAM_APP_LENGTH
-#elif defined(RAM_APP_LENGTH)
-#else
-#define RAM_APP_LENGTH      0x00004000U
-#endif
-
-#define FLASH_APP_ADDR_1    FLASH_APP_START
-#define FLASH_APP_END       (FLASH_APP_START + FLASH_APP_LENGTH)
 
 #define CONFIG_CRC_ENABLE 1
 #if CONFIG_CRC_ENABLE

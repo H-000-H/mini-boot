@@ -17,9 +17,7 @@
                 "CMAKE_C_COMPILER": "arm-none-eabi-gcc",
                 "CMAKE_ASM_COMPILER": "arm-none-eabi-gcc",
                 "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections",
-                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp"
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             }
         },
         {
@@ -28,7 +26,8 @@
             "displayName": "Debug (Cortex-M4, STM32F407)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MINI_BOOT_M4": "ON"
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections -mcpu=cortex-m4 -mthumb -DMINI_BOOT_M4=1",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp -mcpu=cortex-m4 -mthumb -DMINI_BOOT_M4=1"
             }
         },
         {
@@ -37,8 +36,8 @@
             "displayName": "Debug (Cortex-M0)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MINI_BOOT_M0": "ON",
-                "MINI_BOOT_M4": "OFF"
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections -mcpu=cortex-m0 -mthumb -DMINI_BOOT_M0=1",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp -mcpu=cortex-m0 -mthumb -DMINI_BOOT_M0=1"
             }
         },
         {
@@ -47,8 +46,8 @@
             "displayName": "Debug (Cortex-M0+)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MINI_BOOT_M0P": "ON",
-                "MINI_BOOT_M4": "OFF"
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections -mcpu=cortex-m0plus -mthumb -DMINI_BOOT_M0P=1",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp -mcpu=cortex-m0plus -mthumb -DMINI_BOOT_M0P=1"
             }
         },
         {
@@ -57,8 +56,8 @@
             "displayName": "Debug (Cortex-M3)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MINI_BOOT_M3": "ON",
-                "MINI_BOOT_M4": "OFF"
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections -mcpu=cortex-m3 -mthumb -DMINI_BOOT_M3=1",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp -mcpu=cortex-m3 -mthumb -DMINI_BOOT_M3=1"
             }
         },
         {
@@ -67,8 +66,8 @@
             "displayName": "Debug (Cortex-M7)",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "MINI_BOOT_M7": "ON",
-                "MINI_BOOT_M4": "OFF"
+                "CMAKE_C_FLAGS_INIT": "-ffunction-sections -fdata-sections -mcpu=cortex-m7 -mthumb -DMINI_BOOT_M7=1",
+                "CMAKE_ASM_FLAGS_INIT": "-x assembler-with-cpp -mcpu=cortex-m7 -mthumb -DMINI_BOOT_M7=1"
             }
         }
     ],

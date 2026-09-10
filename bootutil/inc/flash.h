@@ -19,6 +19,7 @@ typedef enum
     FLASH_AREA_ID_IMAGE_0=0,
     FLASH_AREA_ID_IMAGE_1,
     FLASH_AREA_ID_BOOTLOADER,
+    FLASH_AREA_ID_STATE, /**< OTA 持久化状态区：必须独占一个擦除扇区，与镜像/引导区不共用 */
 } flash_area_id_t;
 /**
  * @brief: flash 扇区信息 桥接结构体

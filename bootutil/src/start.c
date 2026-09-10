@@ -3,8 +3,9 @@
  * @file start.c
  * @brief ota的启动实现文件。
  * @author H-000-H
- * @note  ota_status 为本文件内 static：符号不导出，外部无法 extern 触碰，
- *        只能通过 start.h 声明的函数读写（信息隐藏 + 全局唯一状态）
+ * @note  运行时状态字 s_ota_state 为本文件内 static：符号不导出，外部无法 extern 触碰，
+ *        只能通过 start.h 声明的函数读写（信息隐藏 + 全局唯一状态）；
+ *        其中需要跨复位保留的位由 ota_state 状态区承载（位定义见 ota_state.h）
  */
 #include "start.h"
 #include "flash.h"
@@ -15,106 +16,147 @@
 #include "boot_config.h"
 #include "memory.h"
 #include "read.h"
-/* OTA 状态字节（bit 定义见 start.h） */
-static volatile uint8_t ota_status = 0;
+#include "boot_keys.h"
+#include "ota_state.h"
+
+/* OTA 运行时状态字（位定义见 ota_state.h */
+static volatile uint32_t s_ota_state = 0u;
 static uint8_t load_buffer[MINI_BOOT_LOAD_MAX];/*默认走固定静态数组的如果内存想要优化可以放进栈里面但是栈小容易出问题固此处不放栈*/
 static uint8_t verify_scratch[MINI_BOOT_LOAD_MAX]; /* 校验分块读取临时缓冲 */
 static uint32_t s_downloaded_size = 0U; /* 最近一次成功下载的镜像总长度，0 表示尚无有效下载 */
-/* 回滚尝试计数（RAM 态：跨复位持久化需接入 flash 状态区，待状态区设计后替换） */
-static uint8_t s_try_left = 0U;     /* 剩余启动尝试次数，0 = 未装填/已确认/已回滚 */
-static uint8_t s_old_partition = 0U; /* 激活新镜像前的旧分区（回滚目标） */
+
+/* 只把需要跨复位保留的位同步到持久状态区；后端未注册时静默失败（早期启动阶段） */
+static void state_sync(void)
+{
+    (void)ota_state_store(s_ota_state & OTA_STATE_DURABLE_MASK);
+}
 /* ---------------- 设置 ---------------- */
+/* 开关位属运行期配置（app 每次启动自行设置），只改 RAM，不落盘 */
 void ota_open(void)
 {
-    ota_status |= 0x01U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_OPEN, 1u);
 }
 
 void ota_close(void)
 {
-    ota_status &= (uint8_t)~0x01U;
-}
-
-void ota_double_open(void)
-{
-    ota_status |= 0x02U;
-}
-
-void ota_double_close(void)
-{
-    ota_status &= (uint8_t)~0x02U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_OPEN, 0u);
 }
 
 void ota_rollback_open(void)
 {
-    ota_status |= 0x04U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_ROLLBACK, 1u);
 }
 
 void ota_rollback_close(void)
 {
-    ota_status &= (uint8_t)~0x04U;
-}
-void ota_set_partition_image_0(void) /* bit6 写入当前分区（0=image_0 1=image_1） */
-{
-    ota_status &= (uint8_t)~0x40U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_ROLLBACK, 0u);
 }
 
-void ota_set_partition_image_1(void) /* bit6 写入当前分区（0=image_0 1=image_1） */
+/* 分区属持久位：boot 复位后要据此跳转，改动即落盘 */
+void ota_set_partition_image_0(void)
 {
-    ota_status |= 0x40U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, 0u);
+    state_sync();
+}
+
+void ota_set_partition_image_1(void)
+{
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, 1u);
+    state_sync();
 }
 #if defined (DEBUG)
 void ota_force_open(void)
 {
-    ota_status |= 0x08U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_FORCE, 1u);
 }
 
 void ota_force_close(void)
 {
-    ota_status &= (uint8_t)~0x08U;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_FORCE, 0u);
 }
 #endif
 
+/* 失败码属持久位：要能跨复位被上层读到，改动即落盘 */
 void ota_fail_set(uint8_t code)
 {
-    ota_status = (uint8_t)((ota_status & (uint8_t)~0x30U) |(uint8_t)((code & 0x03U) << 4));
+    s_ota_state = ota_state_fail_put(s_ota_state, code);
+    state_sync();
 }
 
 /* ---------------- 读取 ---------------- */
 uint8_t mini_boot_get_ota_status(void)
 {
-    return ota_status;
+    return (uint8_t)(s_ota_state & 0xFFu);
 }
 
 uint8_t ota_is_open(void)
 {
-    return (uint8_t)((ota_status >> 0) & 0x01U);
+    return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_OPEN);
 }
 
 uint8_t ota_is_double(void)
 {
-    return (uint8_t)((ota_status >> 1) & 0x01U);
+    /* 只读：双分区是编译期就锁死的能力 */
+    return (uint8_t)OTA_DUAL_PARTITION;
 }
 
 uint8_t ota_is_rollback(void)
 {
-    return (uint8_t)((ota_status >> 2) & 0x01U);
+    return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_ROLLBACK);
 }
 
 #if defined (DEBUG)
 uint8_t ota_is_force(void)
 {
-    return (uint8_t)((ota_status >> 3) & 0x01U);
+    return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_FORCE);
 }
 #endif
 
 uint8_t ota_fail_get(void)
 {
-    return (uint8_t)((ota_status >> 4) & 0x03U);
+    return (uint8_t)ota_state_fail_get(s_ota_state);
 }
 
 uint8_t ota_current_partition_get(void)
 {
-    return (uint8_t)((ota_status >> 6) & 0x01U);
+    return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_CURRENT);
+}
+
+uint8_t ota_is_pending(void)
+{
+    return (uint8_t)ota_state_bit_get(s_ota_state, OTA_STATE_BIT_PENDING);
+}
+
+/* ---------------- 启动恢复 ----------------
+ * boot 选区前调用一次：恢复持久位；若上次激活的新镜像 app 未确认（pending），
+ * 则回滚到另一个分区并记录失败码。首次上电/无有效记录时走默认值。
+ */
+int mini_boot_state_load(void)
+{
+    uint32_t loaded = 0u;
+
+    if (ota_state_load(&loaded) == ERR_OK)
+    {
+        /* 只恢复持久位；开关位是运行期配置，不被持久值覆盖 */
+        s_ota_state = (s_ota_state & ~OTA_STATE_DURABLE_MASK) |
+                      (loaded & OTA_STATE_DURABLE_MASK);
+    }
+    else
+    {
+        s_ota_state &= ~OTA_STATE_DURABLE_MASK; /* 无有效状态：清持久位走默认 */
+    }
+
+    if (ota_state_bit_get(s_ota_state, OTA_STATE_BIT_PENDING) != 0u)
+    {
+        /* pending 置位说明上次激活的新镜像没被 app 确认：回滚到另一分区并落盘 */
+        uint32_t resolved = s_ota_state;
+        if (ota_state_resolve_pending(&resolved, OTA_FAIL_VERIFY) != 0)
+        {
+            s_ota_state = resolved;
+            state_sync();
+        }
+    }
+    return ERR_OK;
 }
 
 /* ---------------- flash 区域选择 ----------------
@@ -134,15 +176,14 @@ static uint32_t flash_inactive_area_id(void)
     {
         return (uint32_t)FLASH_AREA_ID_IMAGE_0;
     }
-    return (ota_current_partition_get() != 0U) ? (uint32_t)FLASH_AREA_ID_IMAGE_0
-                                               : (uint32_t)FLASH_AREA_ID_IMAGE_1;
+    return (ota_current_partition_get() != 0U) ? (uint32_t)FLASH_AREA_ID_IMAGE_0: (uint32_t)FLASH_AREA_ID_IMAGE_1;
 }
 
 /* ---------------- OTA 主流程 ---------------- */
 /* 镜像读取回调上下文：area 只在发起校验前解析/打开一次 */
 typedef struct
 {
-    const flash_area_t *area; /* 镜像所在区域；镜像须从 area 偏移 0 开始，offset 直接透传 */
+    const flash_area_t *area; /* 镜像所在区域；镜像须从 area 偏移 0 开始，offset 移到数据区 */
 } flash_read_ctx_t;
 
 static int flash_image_read_fn(void *ctx, uint32_t offset, uint8_t *buf, uint32_t len)
@@ -171,19 +212,19 @@ int mini_boot_source_download_stream(down_load_hook hook, void *param, uint32_t 
 
     /* 下载目标：非当前运行分区（单分区即 image_0） */
     const flash_area_t *area = NULL;
-    int rc = flash_area_open(flash_inactive_area_id(), &area);
-    if (rc != ERR_OK)
+    int result = flash_area_open(flash_inactive_area_id(), &area);
+    if (result != ERR_OK)
     {
-        ota_fail_set(2U); /* 写 flash 失败 */
-        return rc;
+        ota_fail_set(OTA_FAIL_WRITE);
+        return result;
     }
 
     /*统一擦除函数都是从最开始就开擦除了所以直接一开始擦除足够内存 */
-    rc = flash_area_erase_operation(area, 0U, total_len);
-    if (rc != ERR_OK)
+    result = flash_area_erase_operation(area, 0U, total_len);
+    if (result != ERR_OK)
     {
-        ota_fail_set(2U);
-        return rc;
+        ota_fail_set(OTA_FAIL_WRITE);
+        return result;
     }
 
     uint32_t received = 0U;
@@ -196,18 +237,18 @@ int mini_boot_source_download_stream(down_load_hook hook, void *param, uint32_t 
         }
 
         int raw = 0;
-        rc = hook(param, load_buffer, want, &raw);
-        if ((rc != ERR_OK) || (raw <= 0) || ((uint32_t)raw > want))
+        result = hook(param, load_buffer, want, &raw);
+        if ((result != ERR_OK) || (raw <= 0) || ((uint32_t)raw > want))
         {
-            ota_fail_set(1U); /* 读 bin 失败 */
+            ota_fail_set(OTA_FAIL_READ);
             return ERR_TRANSMIT;
         }
 
-        rc = flash_area_write_operation(area, received, load_buffer, (uint32_t)raw);
-        if (rc != ERR_OK)
+        result = flash_area_write_operation(area, received, load_buffer, (uint32_t)raw);
+        if (result != ERR_OK)
         {
-            ota_fail_set(2U);
-            return rc;
+            ota_fail_set(OTA_FAIL_WRITE);
+            return result;
         }
         received += (uint32_t)raw;
     }
@@ -216,7 +257,7 @@ int mini_boot_source_download_stream(down_load_hook hook, void *param, uint32_t 
     return ERR_OK;
 }
 
-int mini_boot_start_ota(uint8_t try_num)
+int mini_boot_start_ota(void)
 {
     if (!ota_is_open())
     {
@@ -227,68 +268,45 @@ int mini_boot_start_ota(uint8_t try_num)
         return ERR_ARG; /* 尚未成功下载过镜像 */
     }
 
-    /* 校验对象 = 刚下载的新镜像（非当前分区）；meta 在镜像末尾，长度用下载记录值 */
+    /* 校验对象 = 刚下载的新镜像（非当前分区）；meta 在标记末尾无论是否front，长度用下载记录值 */
     flash_read_ctx_t rctx = {NULL};
     int rc = flash_area_open(flash_inactive_area_id(), &rctx.area);
     if (rc != ERR_OK)
     {
-        ota_fail_set(2U);
+        ota_fail_set(OTA_FAIL_WRITE);
         return rc;
     }
 
-    image_read_cfg_t cfg = {0}; /* CRC/SHA 模式无需密钥；加密模式需外部提供 */
+    image_read_cfg_t cfg = {0}; /* CRC/SHA 模式无需密钥；加密模式需先 boot_key_set() 装入 */
+#if IMAGE_CRYPTO_ENABLE
+    cfg.key = boot_key_get(&cfg.key_len);
+#endif
     uint32_t crc = 0U;
     rc = image_verify_stream(flash_image_read_fn, &rctx, s_downloaded_size, &cfg,
                              verify_scratch, sizeof(verify_scratch), &crc);
+#if IMAGE_CRYPTO_ENABLE
+    boot_key_wipe(); /*无论成败都会清密钥避免上层拿密钥 */
+#endif
     if (rc != ERR_OK)
     {
-        ota_fail_set(3U); /* 校验失败 */
+        ota_fail_set(OTA_FAIL_VERIFY);
         return rc;
     }
 
-    /* 校验通过：激活新分区（bit6 切到刚下载的分区），并按需装填回滚尝试计数 */
-    s_old_partition = ota_current_partition_get();
-    if (flash_inactive_area_id() == (uint32_t)FLASH_AREA_ID_IMAGE_1)
-    {
-        ota_set_partition_image_1();
-    }
-    else
-    {
-        ota_set_partition_image_0();
-    }
-    if (ota_is_rollback() && (try_num > 0U))
-    {
-        s_try_left = try_num;
-    }
+    /* 校验通过：激活新分区（bit6 切到刚下载的分区），一次性落盘 */
+    uint32_t current = (flash_inactive_area_id() == (uint32_t)FLASH_AREA_ID_IMAGE_1) ? 1u : 0u;
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_CURRENT, current);
+    /* 双分区 + 回滚开启时才需要待确认：单分区没有可回退的旧镜像 */
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_PENDING,(ota_is_double() && ota_is_rollback()) ? 1u : 0u);
+    state_sync();
     return ERR_OK;
-}
-
-uint8_t mini_boot_try_consume(void)
-{
-    if (s_try_left == 0U)
-    {
-        return 0U;
-    }
-    s_try_left--;
-    if (s_try_left == 0U)
-    {
-        /* 尝试耗尽：切回激活前的旧分区，完成回滚 */
-        if (s_old_partition != 0U)
-        {
-            ota_set_partition_image_1();
-        }
-        else
-        {
-            ota_set_partition_image_0();
-        }
-        ota_fail_set(3U);
-    }
-    return s_try_left;
 }
 
 void mini_boot_confirm_ota(void)
 {
-    s_try_left = 0U;
+    /* app 运行正常：清 pending，下次复位不再回滚 */
+    s_ota_state = ota_state_bit_put(s_ota_state, OTA_STATE_BIT_PENDING, 0u);
+    state_sync();
 }
 
 int mini_boot_pause_ota(void)

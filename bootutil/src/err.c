@@ -21,6 +21,7 @@ const char *err_str(int err)
     case ERR_DECRYPT_FAILED:    return "decrypt failed";
     case ERR_HASH_FAILED:       return "hash failed";
     case ERR_PADDING:           return "invalid pkcs7 padding";
+    case ERR_OTA_STATE:         return "ota state missing or corrupt";
     default:                    return "unknown error";
     }
 }

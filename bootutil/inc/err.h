@@ -30,6 +30,7 @@ extern "C" {
 #define ERR_PADDING         (-11) /**< PKCS#7 填充非法（CBC 去填充时校验） */
 #define ERR_OTA_OPEN     (-12) /**< OTA 未开启 */
 #define ERR_TRANSMIT     (-13) /**<传输错误 */
+#define ERR_OTA_STATE    (-14) /**< OTA 持久化状态缺失或损坏（无有效记录/校验不过） */
 /**
  * @brief 错误码转可读字符串
  * @param err [in] 本文件定义的错误码
