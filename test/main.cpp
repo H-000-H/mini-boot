@@ -27,6 +27,9 @@
 #include "ota_state.h"
 #include "read.h"
 #include "start.h"
+#if IMAGE_CRYPTO_ENABLE
+#include "algorithm.h" /* 测试自造密文/摘要（仅开加密时） */
+#endif
 
 #include <algorithm>
 #include <array>
@@ -276,6 +279,37 @@ static std::vector<uint8_t> build_crc_image(const std::vector<uint8_t> &payload,
     img.push_back(static_cast<uint8_t>(IMAGE_META_MAGIC));
     img.push_back(static_cast<uint8_t>(static_cast<uint8_t>(IMAGE_CHECK_CRC) |
                                        (is_front ? 0x80u : 0u)));
+    img.push_back(static_cast<uint8_t>(version.size()));
+    img.push_back(static_cast<uint8_t>(tag.size()));
+    return img;
+}
+
+/* 构造任意模式的镜像（is_front=1）：crc | version | tag | aux | payload | meta */
+static std::vector<uint8_t> build_image(image_check_t mode,
+                                        const std::vector<uint8_t> &aux,
+                                        const std::vector<uint8_t> &payload,
+                                        std::string_view version,
+                                        std::string_view tag,
+                                        uint32_t crc)
+{
+    std::vector<uint8_t> img;
+
+    auto put_le32 = [&img](uint32_t v)
+    {
+        img.push_back(static_cast<uint8_t>(v & 0xFFu));
+        img.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+        img.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+        img.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+    };
+
+    put_le32(crc);
+    img.insert(img.end(), version.begin(), version.end());
+    img.insert(img.end(), tag.begin(), tag.end());
+    img.insert(img.end(), aux.begin(), aux.end());
+    img.insert(img.end(), payload.begin(), payload.end());
+
+    img.push_back(static_cast<uint8_t>(IMAGE_META_MAGIC));
+    img.push_back(static_cast<uint8_t>(static_cast<uint8_t>(mode) | 0x80u));
     img.push_back(static_cast<uint8_t>(version.size()));
     img.push_back(static_cast<uint8_t>(tag.size()));
     return img;
@@ -998,15 +1032,6 @@ static bool torn_state_write(uint32_t state_word)
     return flash_area_write_operation(a, static_cast<uint32_t>(off), &rec[0], 4u) == ERR_OK;
 }
 
-/* 备用分区检查钩子 */
-static int g_backup_ok = 1;
-
-static int backup_check_hook(uint32_t backup_partition)
-{
-    (void)backup_partition;
-    return g_backup_ok;
-}
-
 static void test_power_loss()
 {
     std::cout << "\n=== 6. 掉电与异常场景测试 ===\n";
@@ -1078,13 +1103,11 @@ static void test_power_loss()
     check(ota_is_pending() == 1u, "p2: pending == 1");
     step("p2: 重新下载并激活成功");
 
-    /* ---- 7.3 回滚目标校验：备用不可用则放弃回滚 ---- */
+    /* ---- 7.3 pending 未确认 → 回滚到另一分区 ---- */
     reset_flash();
     reset_state_medium();
     check(area_program(FLASH_AREA_ID_IMAGE_0, img_old), "p3: 出厂烧录 image_0");
-    check(ota_set_backup_check(backup_check_hook) == ERR_OK, "p3: 注册备用分区检查钩子");
 
-    g_backup_ok = 0; /* 假装备用分区已损坏 */
     part = power_on_boot("p3 boot#1 无状态", true);
     check(part == 0u, "p3: 默认跳 image_0");
     {
@@ -1096,33 +1119,13 @@ static void test_power_loss()
     }
     check(mini_boot_start_ota() == ERR_OK, "p3: 激活 image_1");
     check(ota_is_pending() == 1u, "p3: pending == 1");
+    step("p3: 激活 image_1 后未确认");
 
-    part = power_on_boot("p3 boot#2 复位(备用不可用)");
-    check(part == 1u, "p3: 放弃回滚, 留在 image_1");
+    part = power_on_boot("p3 boot#2 复位(未确认)");
+    check(part == 0u, "p3: 回滚到 image_0");
     check(ota_is_pending() == 0u, "p3: pending 已清");
     check(ota_fail_get() == OTA_FAIL_VERIFY, "p3: fail == VERIFY");
-    step("p3: 备用不可用，放弃回滚留在 image_1");
-
-    /* 对照：备用可用时照常回滚 */
-    reset_flash();
-    reset_state_medium();
-    check(area_program(FLASH_AREA_ID_IMAGE_0, img_old), "p3b: 出厂烧录 image_0");
-    g_backup_ok = 1;
-    part = power_on_boot("p3b boot#1 无状态", true);
-    check(part == 0u, "p3b: 默认跳 image_0");
-    {
-        stream_src_t s;
-        s.img = &img_new;
-        check(mini_boot_source_download_stream(stream_feed_hook, &s,
-                                               static_cast<uint32_t>(img_new.size())) == ERR_OK,
-              "p3b: 下载 image_1");
-    }
-    check(mini_boot_start_ota() == ERR_OK, "p3b: 激活 image_1");
-    part = power_on_boot("p3b boot#2 复位(备用可用)");
-    check(part == 0u, "p3b: 正常回滚到 image_0");
-    check(ota_is_pending() == 0u, "p3b: pending 已清");
-    check(ota_set_backup_check(nullptr) == ERR_OK, "p3b: 注销备用分区检查钩子");
-    step("p3b: 备用可用，正常回滚到 image_0");
+    step("p3: 未确认回滚到 image_0");
 
     test_result("掉电与异常场景测试");
 }
@@ -1151,6 +1154,192 @@ static void test_erase_all()
 }
 
 /* ====================================================================== */
+/* 测试 8：备份分区镜像校验（mini_boot_backup，复用 read）               */
+/* ====================================================================== */
+#if IMAGE_CRYPTO_ENABLE
+static void test_backup_crypto()
+{
+    std::cout << "\n--- 8b. 加密模式备份校验（SHA/GCM/CBC/CBC_SHA）---\n";
+
+    const uint8_t key[16] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
+                             0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE};
+    const uint8_t nonce[IMAGE_GCM_NONCE_LEN] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    const uint8_t iv[IMAGE_CBC_IV_LEN] = {0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+                                          0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF};
+    const std::vector<uint8_t> fw = make_firmware(0x5Au, 64u);
+
+    mini_boot_backup_param_t p = {};
+    p.partition = static_cast<int>(FLASH_AREA_ID_IMAGE_1);
+    p.key = key;
+    p.key_len = sizeof(key);
+
+    /* --- SHA --- */
+    {
+        uint8_t digest[IMAGE_HASH_LEN];
+        sha256_stream_t sh;
+        check(sha256_begin(&sh) == 0, "SHA begin");
+        check(sha256_feed(&sh, fw.data(), fw.size()) == 0, "SHA feed");
+        check(sha256_end(&sh, digest) == 0, "SHA end");
+
+        std::vector<uint8_t> aux(digest, digest + IMAGE_HASH_LEN);
+        std::vector<uint8_t> img = build_image(IMAGE_CHECK_SHA, aux, fw, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img), "SHA 镜像烧录");
+        p.size = static_cast<uint32_t>(img.size());
+        check(mini_boot_backup(&p) == ERR_OK, "SHA 完好 → ERR_OK");
+
+        aux[0] ^= 0xFFu;
+        std::vector<uint8_t> img_bad = build_image(IMAGE_CHECK_SHA, aux, fw, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img_bad), "SHA 篡改摘要烧录");
+        check(mini_boot_backup(&p) == ERR_HASH_MISMATCH, "SHA 摘要错 → ERR_HASH_MISMATCH");
+    }
+
+    /* --- GCM --- */
+    {
+        std::vector<uint8_t> ct(fw.size());
+        uint8_t tag[IMAGE_GCM_TAG_LEN];
+        gcm_stream_t g;
+        check(aes_gcm_encrypt_stream_begin(&g, nonce, IMAGE_GCM_NONCE_LEN, key, sizeof(key)) == 0,
+              "GCM 加密 begin");
+        check(aes_gcm_stream_feed(&g, fw.data(), ct.data(), ct.size()) == 0, "GCM 加密 feed");
+        check(aes_gcm_encrypt_stream_finish(&g, tag, IMAGE_GCM_TAG_LEN) == 0, "GCM 加密 finish");
+
+        std::vector<uint8_t> aux;
+        aux.insert(aux.end(), nonce, nonce + IMAGE_GCM_NONCE_LEN);
+        aux.insert(aux.end(), tag, tag + IMAGE_GCM_TAG_LEN);
+
+        std::vector<uint8_t> img = build_image(IMAGE_CHECK_GCM, aux, ct, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img), "GCM 镜像烧录");
+        p.size = static_cast<uint32_t>(img.size());
+        check(mini_boot_backup(&p) == ERR_OK, "GCM 完好 → ERR_OK");
+
+        aux[IMAGE_GCM_NONCE_LEN] ^= 0xFFu; /* 破坏 tag */
+        std::vector<uint8_t> img_bad = build_image(IMAGE_CHECK_GCM, aux, ct, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img_bad), "GCM 篡改 tag 烧录");
+        check(mini_boot_backup(&p) == ERR_AUTH_FAILED, "GCM tag 错 → ERR_AUTH_FAILED");
+    }
+
+    /* 生成一份 CBC 密文，CBC / CBC_SHA 共用 */
+    std::vector<uint8_t> padded = fw;
+    padded.insert(padded.end(), IMAGE_CBC_BLOCK_LEN, static_cast<uint8_t>(IMAGE_CBC_BLOCK_LEN));
+    std::vector<uint8_t> ct(padded.size());
+    {
+        cbc_stream_t c;
+        check(aes_cbc_encrypt_stream_begin(&c, iv, key, sizeof(key)) == 0, "CBC 加密 begin");
+        check(aes_cbc_encrypt_stream_feed(&c, padded.data(), ct.data(), ct.size()) == 0,
+              "CBC 加密 feed");
+        aes_cbc_stream_free(&c);
+    }
+
+    /* --- CBC --- */
+    {
+        std::vector<uint8_t> aux(iv, iv + IMAGE_CBC_IV_LEN);
+        std::vector<uint8_t> img = build_image(IMAGE_CHECK_CBC, aux, ct, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img), "CBC 镜像烧录");
+        p.size = static_cast<uint32_t>(img.size());
+        check(mini_boot_backup(&p) == ERR_OK, "CBC 完好 → ERR_OK");
+    }
+
+    /* --- CBC_SHA（mac_key 回退 key）--- */
+    {
+        uint8_t hmac[IMAGE_HASH_LEN];
+        hmac_sha256_stream_t hs;
+        check(hmac_sha256_stream_begin(&hs, key, sizeof(key)) == 0, "CBC_SHA HMAC begin");
+        check(hmac_sha256_stream_feed(&hs, iv, IMAGE_CBC_IV_LEN) == 0, "CBC_SHA HMAC feed IV");
+        check(hmac_sha256_stream_feed(&hs, ct.data(), ct.size()) == 0, "CBC_SHA HMAC feed 密文");
+        check(hmac_sha256_stream_end(&hs, hmac) == 0, "CBC_SHA HMAC end");
+
+        std::vector<uint8_t> aux;
+        aux.insert(aux.end(), iv, iv + IMAGE_CBC_IV_LEN);
+        aux.insert(aux.end(), hmac, hmac + IMAGE_HASH_LEN);
+
+        std::vector<uint8_t> img = build_image(IMAGE_CHECK_CBC_SHA, aux, ct, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img), "CBC_SHA 镜像烧录");
+        p.size = static_cast<uint32_t>(img.size());
+        check(mini_boot_backup(&p) == ERR_OK, "CBC_SHA 完好 → ERR_OK");
+
+        aux[IMAGE_CBC_IV_LEN] ^= 0xFFu; /* 破坏 hmac */
+        std::vector<uint8_t> img_bad = build_image(IMAGE_CHECK_CBC_SHA, aux, ct, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_1, img_bad), "CBC_SHA 篡改 hmac 烧录");
+        check(mini_boot_backup(&p) == ERR_AUTH_FAILED, "CBC_SHA hmac 错 → ERR_AUTH_FAILED");
+    }
+}
+#endif /* IMAGE_CRYPTO_ENABLE */
+
+static void test_backup()
+{
+    std::cout << "\n=== 8. 备份分区镜像校验（mini_boot_backup，复用 read）===\n";
+    s_fail = 0;
+
+    reset_flash();
+    reset_state_medium();
+
+    /* 900B payload + 开销 > 512B：覆盖多块读取与末段不满一块 */
+    const std::vector<uint8_t> fw = make_firmware(0x20u, 900u);
+    const std::vector<uint8_t> img =
+        build_image(IMAGE_CHECK_CRC, {}, fw, "1.0.0", "bk", crc32_of(fw));
+    check(area_program(FLASH_AREA_ID_IMAGE_0, img), "image_0 烧录完好镜像");
+
+    mini_boot_backup_param_t p = {};
+    p.partition = static_cast<int>(FLASH_AREA_ID_IMAGE_0);
+    p.size = static_cast<uint32_t>(img.size());
+
+    /* 1) 完好镜像（CRC 模式）→ 通过 */
+    check(mini_boot_backup(&p) == ERR_OK, "CRC 完好镜像 → ERR_OK");
+
+    /* 2) 载荷篡改 → CRC 不匹配（布局：crc(4)|ver(5)|tag(2)|payload...） */
+    {
+        std::vector<uint8_t> bad = img;
+        bad[4u + 5u + 2u + 30u] ^= 0xFFu;
+        check(area_program(FLASH_AREA_ID_IMAGE_0, bad), "烧录被篡改镜像");
+        check(mini_boot_backup(&p) == ERR_CRC_MISMATCH, "CRC 被篡改 → ERR_CRC_MISMATCH");
+    }
+    check(area_program(FLASH_AREA_ID_IMAGE_0, img), "恢复完好镜像");
+
+    /* 3) 入参非法 / 边界 */
+    check(mini_boot_backup(nullptr) == ERR_ARG, "param=NULL → ERR_ARG");
+    p.size = 0u;
+    check(mini_boot_backup(&p) == ERR_ARG, "size=0 → ERR_ARG");
+    p.size = (IMAGE_CRC_LEN + IMAGE_META_LEN - 1u);
+    check(mini_boot_backup(&p) == ERR_ARG, "size 过小 → ERR_ARG");
+    const flash_area_t *a = nullptr;
+    check(flash_area_open(FLASH_AREA_ID_IMAGE_0, &a) == ERR_OK, "读取 image_0 区域大小");
+    p.size = a->fa_size + 1u;
+    check(mini_boot_backup(&p) == ERR_ARG, "size>区域大小 → ERR_ARG");
+    p.size = static_cast<uint32_t>(img.size());
+
+    /* 4) 未知分区 */
+    mini_boot_backup_param_t p_bad = p;
+    p_bad.partition = 0x7F;
+    check(mini_boot_backup(&p_bad) == ERR_NOT_SUPPORTED, "未知分区 → ERR_NOT_SUPPORTED");
+
+    /* 5) meta 非法（magic 改错）→ read 解析失败 */
+    {
+        std::vector<uint8_t> nomagic = img;
+        nomagic[nomagic.size() - 4u] = 0x00u;
+        check(area_program(FLASH_AREA_ID_IMAGE_0, nomagic), "烧录坏 meta 镜像");
+        check(mini_boot_backup(&p) == ERR_ARG, "meta 非法 → ERR_ARG");
+    }
+
+#if !IMAGE_CRYPTO_ENABLE
+    /* 未编加密：SHA/GCM/CBC_SHA 镜像一律不支持（CBC 在 read 层是无认证的例外） */
+    {
+        std::vector<uint8_t> aux(IMAGE_HASH_LEN, 0u);
+        std::vector<uint8_t> img_sha = build_image(IMAGE_CHECK_SHA, aux, fw, "1.0.0", "bk", 0u);
+        check(area_program(FLASH_AREA_ID_IMAGE_0, img_sha), "SHA 镜像烧录(未编加密)");
+        p.size = static_cast<uint32_t>(img_sha.size());
+        check(mini_boot_backup(&p) == ERR_NOT_SUPPORTED, "SHA(未编加密) → ERR_NOT_SUPPORTED");
+    }
+#endif
+
+    test_result("备份分区镜像校验");
+
+#if IMAGE_CRYPTO_ENABLE
+    test_backup_crypto();
+    test_result("加密模式备份校验");
+#endif
+}
+
+/* ====================================================================== */
 /* 菜单                                                                    */
 /* ====================================================================== */
 static void print_menu()
@@ -1164,7 +1353,8 @@ static void print_menu()
         "  5  OTA 全流程测试（激活/确认/回滚, setjmp 模拟跳分区）\n"
         "  6  掉电与异常场景测试\n"
         "  7  擦除全片 flash（恢复出厂）\n"
-        "  8  单步模式：" << (g_step_mode ? "开（回车逐步）" : "关（一键跑完）") << "\n"
+        "  8  分区摘要校验（mini_boot_backup）\n"
+        "  9  单步模式：" << (g_step_mode ? "开（回车逐步）" : "关（一键跑完）") << "\n"
         "  0  退出\n"
         "===============================================\n";
 }
@@ -1193,7 +1383,51 @@ static int prompt_int(int fallback)
     }
 }
 
-int main()
+/* 执行一个菜单项；返回非 0 表示应退出程序 */
+static int run_choice(int choice)
+{
+    switch (choice)
+    {
+    case 0:
+        std::cout << "退出。\n";
+        return 1;
+    case 1:
+        test_layout();
+        break;
+    case 2:
+        test_flash_fidelity();
+        break;
+    case 3:
+        test_image_verify();
+        break;
+    case 4:
+        test_download();
+        break;
+    case 5:
+        test_ota_flow();
+        break;
+    case 6:
+        test_power_loss();
+        break;
+    case 7:
+        test_erase_all();
+        break;
+    case 8:
+        test_backup();
+        break;
+    case 9:
+        g_step_mode = !g_step_mode;
+        std::cout << "单步模式已" << (g_step_mode ? "开启（流程测试逐步暂停）" : "关闭（一键跑完）")
+                  << "。\n";
+        break;
+    default:
+        std::cout << "无效选择，请输入 0~9。\n";
+        break;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv)
 {
     platform_init();
 
@@ -1203,45 +1437,42 @@ int main()
               << "  MINI_BOOT_LOAD_MAX=" << MINI_BOOT_LOAD_MAX << "\n";
     flash_layout_dump();
 
+    /* 命令行模式：main.exe 2 3 8 依次跑完即退出，便于脚本/CI；退出码 = 是否有失败项 */
+    if (argc > 1)
+    {
+        g_step_mode = false; /* 非交互：流程测试不要停下来等回车 */
+        int failures = 0;
+
+        for (int i = 1; i < argc; ++i)
+        {
+            int choice = -1;
+            try
+            {
+                choice = std::stoi(argv[i]);
+            }
+            catch (...)
+            {
+                std::cout << "忽略非法测试项: " << argv[i] << "\n";
+                continue;
+            }
+
+            s_fail = 0;
+            if (run_choice(choice) != 0)
+            {
+                break;
+            }
+            failures += s_fail;
+        }
+        return (failures == 0) ? 0 : 1;
+    }
+
     for (;;)
     {
         print_menu();
-
-        const int choice = prompt_int(-1);
-        switch (choice)
+        if (run_choice(prompt_int(-1)) != 0)
         {
-        case 0:
-            std::cout << "退出。\n";
-            return (s_fail == 0) ? 0 : 1;
-        case 1:
-            test_layout();
-            break;
-        case 2:
-            test_flash_fidelity();
-            break;
-        case 3:
-            test_image_verify();
-            break;
-        case 4:
-            test_download();
-            break;
-        case 5:
-            test_ota_flow();
-            break;
-        case 6:
-            test_power_loss();
-            break;
-        case 7:
-            test_erase_all();
-            break;
-        case 8:
-            g_step_mode = !g_step_mode;
-            std::cout << "单步模式已" << (g_step_mode ? "开启（流程测试逐步暂停）" : "关闭（一键跑完）")
-                      << "。\n";
-            break;
-        default:
-            std::cout << "无效选择，请输入 0~8。\n";
             break;
         }
     }
+    return (s_fail == 0) ? 0 : 1;
 }

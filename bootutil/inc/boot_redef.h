@@ -118,6 +118,15 @@ typedef struct
 #if !defined(__cplusplus) && !defined(_MSC_VER)
 _Static_assert(offsetof(mini_boot_vector_t, reset_handler) == 4U,
                "mini_boot_vector_t 布局必须匹配 ARM 向量表：+0 MSP,+4 复位入口");
+
+/**
+ * @brief 系统复位（平台实现）
+ * @return 无直接bootloar了也不需要返回值
+ * @note  
+    - 平台实现需保证调用后系统软复位(此处可和jump一样硬跳但是我感觉没必要直接软复位就行)，
+    - 返回值仅表示是否成功触发复位
+ */
+void mini_boot_system_reset(void);
 #endif
 #ifdef __cplusplus
 }

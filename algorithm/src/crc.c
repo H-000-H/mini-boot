@@ -231,32 +231,32 @@ static uint32_t crc_finalize(uint32_t reg, uint8_t width, int refin, int refout,
 /*-------------------------------------------------------------------------------------------------------*/
 /* 分段续算实现                                                                                          */
 /*-------------------------------------------------------------------------------------------------------*/
-void crc_stream_start(crc_stream_t *s, uint32_t init, int refin, int refout,
+void crc_stream_start(crc_stream_t *init_state, uint32_t init, int refin, int refout,
                       uint32_t xor_out, uint32_t poly, uint8_t width)
 {
     uint32_t mask;
 
-    if (s == NULL || width == 0 || width > 32)
+    if (init_state == NULL || width == 0 || width > 32)
     {
-        s->width = 0; /* 标记无效状态，feed/finish 将直接返回 0 */
+        init_state->width = 0; /* 标记无效状态，feed/finish 将直接返回 0 */
         return;
     }
 
     mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
-    s->width   = width;
-    s->refin   = (refin != 0) ? 1u : 0u;
-    s->refout  = (refout != 0) ? 1u : 0u;
-    s->xor_out = xor_out;
+    init_state->width   = width;
+    init_state->refin   = (refin != 0) ? 1u : 0u;
+    init_state->refout  = (refout != 0) ? 1u : 0u;
+    init_state->xor_out = xor_out;
 
     if (refin)
     {
-        s->reg  = reflect(init, width) & mask;
-        s->poly = reflect(poly, width) & mask;
+        init_state->reg  = reflect(init, width) & mask;
+        init_state->poly = reflect(poly, width) & mask;
     }
     else
     {
-        s->reg  = init & mask;
-        s->poly = poly & mask;
+        init_state->reg  = init & mask;
+        init_state->poly = poly & mask;
     }
 }
 

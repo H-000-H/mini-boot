@@ -11,6 +11,10 @@
 #include "boot.h"
 #include "boot_redef.h"
 #include "boot_config.h"
+#include "start.h" /* mini_boot_backup：可选的跳转前整包校验 */
+#if IMAGE_CRYPTO_ENABLE
+#include "boot_keys.h" /* 加密镜像整包校验用的密钥槽 */
+#endif
 #include <stdint.h>
 #define APP_ENTRY_ADDR (BOOT_APP_BASE + 4)
 static inline int mini_boot_set_systick(uint32_t ctrl, uint32_t val)
@@ -53,6 +57,29 @@ int boot_jump_switch_app(mini_boot_app_area_t app_area)
         ((app_pc & 0x1U) == 0U))
     {
         return ERR_ARG;
+    }
+
+    /* 向量表合法后、真正跳转前：可选的整包校验（image_len != 0 时启用）。
+     * 镜像曾被下载时校验/确认过，这里额外挡一下位翻转/误擦写，避免跳进坏镜像。 */
+    if (app_area.image_len != 0U)
+    {
+        mini_boot_backup_param_t vp = {0};
+        int vrc;
+
+        vp.partition = (int)app_area.fa_id;
+        vp.size = app_area.image_len;
+#if IMAGE_CRYPTO_ENABLE
+        {
+            size_t klen = 0U;
+            vp.key = boot_key_get(&klen);
+            vp.key_len = (uint32_t)klen;
+        }
+#endif
+        vrc = mini_boot_backup(&vp);
+        if (vrc != ERR_OK)
+        {
+            return vrc;
+        }
     }
 
     (void)mini_boot_irq_disable();

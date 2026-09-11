@@ -17,10 +17,9 @@
 #include "read.h"
 #include "boot_keys.h"
 #include "ota_state.h"
-
+#include "sys/types.h"
 /* OTA 运行时状态字（位定义见 ota_state.h） */
 static volatile uint32_t s_ota_state = 0u;
-static ota_backup_check_fn s_backup_check = NULL; /* 可选：回滚前检查备用分区 */
 static uint8_t load_buffer[MINI_BOOT_LOAD_MAX];/*默认走固定静态数组的如果内存想要优化可以放进栈里面但是栈小容易出问题固此处不放栈*/
 static uint8_t verify_scratch[MINI_BOOT_LOAD_MAX]; /* 校验分块读取临时缓冲 */
 static uint32_t s_downloaded_size = 0U; /* 最近一次成功下载的镜像总长度，0 表示尚无有效下载 */
@@ -156,12 +155,6 @@ static int state_reload(void)
     return rc; /* 后端未注册（ERR_NOT_SUPPORTED）等 */
 }
 
-int ota_set_backup_check(ota_backup_check_fn fn)
-{
-    s_backup_check = fn;
-    return ERR_OK;
-}
-
 /* ---------------- 启动恢复 ----------------
  * boot 选区前调用一次：恢复持久位；若上次激活的新镜像 app 未确认（pending），
  * 则回滚到另一个分区并记录失败码。首次上电/无有效记录时走默认值。
@@ -177,35 +170,13 @@ int mini_boot_state_load(void)
 
     if (ota_is_pending() != 0u)
     {
-        /* pending：上次激活的新镜像没被 app 确认，本该回滚；但先问一句备用能不能用 ——
-         * 备用也坏的话，"回滚"只会跳进一个更坏的镜像。 */
-        uint32_t backup_partition =
-            (ota_state_partition_get(s_ota_state) == OTA_STATE_PARTITION_IMAGE_1)
-                ? OTA_STATE_PARTITION_IMAGE_0
-                : OTA_STATE_PARTITION_IMAGE_1;
-        int backup_ok = 1;
-
-        if (s_backup_check != NULL)
+        /* pending：上次激活的新镜像没被 app 确认 → 回滚到另一分区
+         * （翻转 current + 清 pending + 记失败码），一次落盘 */
+        uint32_t resolved = s_ota_state;
+        if (ota_state_resolve_pending(&resolved, OTA_FAIL_VERIFY) != 0)
         {
-            backup_ok = s_backup_check(backup_partition);
-        }
-
-        if (backup_ok != 0)
-        {
-            /* 备用可用：回滚到它（翻转 current + 清 pending + 记失败码），一次落盘 */
-            uint32_t resolved = s_ota_state;
-            if (ota_state_resolve_pending(&resolved, OTA_FAIL_VERIFY) != 0)
-            {
-                uint32_t mask = OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK;
-                (void)state_update(mask, resolved & mask);
-            }
-        }
-        else
-        {
-            /* 备用不可用：放弃回滚，保留当前镜像（它是校验通过的）；清 pending 防止每次
-             * 上电反复判定，并记失败码供上层识别 */
-            (void)state_update(OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK,
-                               ota_state_fail_encode(OTA_FAIL_VERIFY));
+            uint32_t mask = OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK;
+            (void)state_update(mask, resolved & mask);
         }
     }
     return ERR_OK;
@@ -354,8 +325,8 @@ int mini_boot_start_ota(void)
         return rc;
     }
 
-    /* 校验通过：激活新分区（bit6 切到刚下载的分区）+ 按需置 pending，一次落盘；
-     * 同时清掉上次的失败码（它描述的是上一次 OTA 的结果，这次已成功翻篇） */
+    /* 校验通过：激活新分区（bit6 切到刚下载的分区）+ 按需置 pending；
+     * 同时清掉上次的失败码（它描述的是上一次 OTA 的结果） */
     uint32_t mask = OTA_STATE_MASK_CURRENT | OTA_STATE_MASK_PENDING | OTA_STATE_FAIL_MASK;
     uint32_t value = 0u;
     if (flash_inactive_area_id() == (uint32_t)FLASH_AREA_ID_IMAGE_1)
@@ -373,6 +344,37 @@ int mini_boot_start_ota(void)
         return rc_state;
     }
     return ERR_OK;
+}
+
+int mini_boot_backup(mini_boot_backup_param_t *param)
+{
+    flash_read_ctx_t rctx = {NULL};
+    image_read_cfg_t cfg = {0};
+    int rc;
+
+    if ((param == NULL) || (param->size < (IMAGE_CRC_LEN + IMAGE_META_LEN)))
+    {
+        return ERR_ARG;
+    }
+
+    rc = flash_area_open((uint32_t)param->partition, &rctx.area);
+    if (rc != ERR_OK)
+    {
+        return rc;
+    }
+    if ((rctx.area == NULL) || (param->size > rctx.area->fa_size))
+    {
+        return ERR_ARG;
+    }
+
+    cfg.key = param->key;
+    cfg.key_len = param->key_len;
+    cfg.mac_key = param->mac_key;
+    cfg.mac_key_len = param->mac_key_len;
+
+    /* 复用 read.c：模式/aux/摘要全由镜像自描述 meta 决定，不在核心层重造校验 */
+    return image_verify_stream(flash_image_read_fn, &rctx, param->size,
+                               &cfg, verify_scratch, (uint32_t)sizeof(verify_scratch), NULL);
 }
 
 int mini_boot_confirm_ota(void)

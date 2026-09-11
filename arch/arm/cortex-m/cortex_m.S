@@ -7,7 +7,7 @@
 @ 核差异汇总：
 @   - VTOR：仅 Cortex-M0 没有（M0+ 起才有），故 MINI_BOOT_M0 下 mini_boot_set_vtor 返回 ERR_NOT_SUPPORTED；
 @           M0+ 用独立宏 MINI_BOOT_M0P 选择（与 M0 区分），走写 VTOR 分支
-@   - CONTROL：各核均支持读写，这里只清 SPSEL(bit1) 切回 MSP（bit0 在 v6-M 上保留，写 0 安全）
+@   - CONTROL：各核均支持读写，这里只清 SPSEL(bit1) 切回 MSP
 
 @ 目标核由构建方提供：必须定义 MINI_BOOT_M0/M0P/M3/M4/M7 之一，并配套 -mcpu
 #if !defined(MINI_BOOT_M0) && !defined(MINI_BOOT_M0P) && !defined(MINI_BOOT_M3) && \
@@ -137,3 +137,20 @@ mini_boot_jump_to_app:
     b     .Ljump_hang
 
     .ltorg
+
+    .equ AIRCR, (0xE000E000 + 0x0D00 + 0x00C) @ Application Interrupt and Reset Control Register
+@ 软复位直接参考cmsis的软复位写的(可修改为直跳bootloar版本)
+    .section .text.mini_boot_system_reset,"ax",%progbits
+    .global mini_boot_system_reset
+    .type   mini_boot_system_reset, %function
+    .thumb_func
+mini_boot_system_reset:
+    ldr   r0, =AIRCR         
+    ldr   r1, =0x05FA0004     @ VECTKEY(0x5FA<<16) | SYSRESETREQ(bit2)
+    dsb                       
+    str   r1, [r0]           
+    dsb                      
+.Lreset_hang:
+    b     .Lreset_hang        @ 等待复位生效（等价于 cmsis 的 for(;;){__NOP()}）
+    .ltorg                   
+

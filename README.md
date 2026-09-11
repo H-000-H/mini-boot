@@ -273,23 +273,54 @@ void app_confirm_after_self_test(void)
 
 > 说明
 > - 双分区回滚依赖 `mini_boot_confirm_ota()`：新镜像跑起来没确认就复位，boot 的 `mini_boot_state_load()` 会切回旧分区并记失败码。
-> - 可选 `ota_set_backup_check(fn)`：回滚前先校验备用分区可用性，备用坏了就不硬切过去。
+> - 需要单独校验某个分区里的镜像是否完好，可用 `mini_boot_backup()`（内部复用 `read.c` 的 `image_verify_stream()`，模式/摘要/nonce/iv/tag 都由镜像自描述）。
+> - 跳转前想顺手整包校验（挡位翻转/误擦写）：给 `mini_boot_app_area_t` 填上 `fa_id` 与 `image_len`（镜像实际长度），`boot_jump_switch_app()` 内部会调 `mini_boot_backup()`；两者留 0 就只做原来的向量表校验。
 > - app 分区地址 `IMAGE_x_ADDR/SIZE`、向量表校验依赖的 `SRAM_START_ADDR/SRAM_SIZE` 由板级链接脚本 / 配置提供（见 `boot_config.h`，需通过 `config.h` 或 `-D` 注入）。
 > - `OTA_DUAL_PARTITION` 是编译期能力开关：双分区工程 `-DOTA_DUAL_PARTITION=1`，单分区保持默认 0。
 
 ## 镜像布局
 
-```
-元数据在后(默认):  payload | aux | version | tag | crc32(4B) | meta(4B)
-元数据在前(--is_front): crc32(4B) | version | tag | aux | payload | meta(4B)
+打包端 `tools/main.py` 生成、设备端 `read.c` 解析的格式如下(数字均为小端):
 
-meta(恒在末尾): magic(0xA5) | mode|0x80(is_front 置位) | version_len | tag_len
-aux: CRC=空  SHA=sha256(32B)  GCM=nonce(12B)+tag(16B)  CBC=iv(16B)  CBC_SHA=iv(16B)+hmac(32B)
+```
+元数据在后 is_front=0(默认):
+  payload | aux | version | tag | crc32(4B) | meta(4B)
+
+元数据在前 is_front=1(--is_front):
+  crc32(4B) | version | tag | aux | payload | meta(4B)
 ```
 
-- `payload`: 原始固件, 或加密后的密文(加密模式下 crc 对密文计算)
-- `meta`: 镜像自描述——模式、元数据位置、version/tag 长度都记录在末尾 4B, 设备端解析无需额外参数
-- CBC_SHA 的 HMAC 覆盖 `iv || 密文`
+- `payload`: 原始固件; 加密模式下是密文(此时 crc 对密文计算)
+- `version` / `tag`: 变长字符串, 长度(0~255)记在 meta 里
+- `aux`: 附加数据, 长度由模式决定(见下表)
+- `crc32`: 4B 小端
+- `meta`: 恒在镜像最后 4B, 自描述(见下表)
+
+### meta(4B, 恒在末尾)
+
+| 偏移 | 含义 |
+|---|---|
+| 0 | 魔数 `0xA5` |
+| 1 | bit7 = `is_front`; bit0~6 = 模式编号 |
+| 2 | `version` 长度 |
+| 3 | `tag` 长度 |
+
+### 模式编号与 aux
+
+| 模式 | 编号 | aux 布局 | 设备端流式处理(`image_verify_stream`) |
+|---|---|---|---|
+| CRC | 0 | 空 | 对 payload 算 CRC32 与 `crc32` 比对 |
+| SHA | 1 | sha256(32B) | 对 payload 算 SHA-256 与 aux 比对 |
+| GCM | 2 | nonce(12B) + tag(16B) | AES-GCM 流式解密(明文即弃)并验 tag |
+| CBC | 3 | iv(16B) | 无认证属性, 仅布局检查, 恒通过 |
+| CBC_SHA | 4 | iv(16B) + hmac(32B) | HMAC 覆盖 `iv‖密文` 并比对(verify-then-decrypt 的验证段) |
+
+> `image_read_payload()`(一次性接口)对 CBC/CBC_SHA 会真正解密并做 PKCS#7 去填充;
+> 这里列的是 `image_verify_stream()` 流式路径的行为。
+
+> 解析器只靠镜像字节 + **总长度**工作: `meta` 从 `buf[len-4]` 读起。 所以校验时传入的长度必须是
+> 镜像实际长度(含 meta), 不能是分区/槽大小; 传错会找不到 meta 直接报 `ERR_ARG`。
+> `mini_boot_backup()` 与 `boot_jump_switch_app()` 的整包校验都遵循这一点。
 
 ## 打包与校验的参数必须一致
 
